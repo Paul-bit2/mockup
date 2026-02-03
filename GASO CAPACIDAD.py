@@ -347,28 +347,47 @@ K_COL_MES = "MES"
 K_COL_EQUIPO = "NOMBRE DEL EQUIPO"
 K_COL_KM = "KILOMETRAJE"
 
-
 def parse_mes_to_period(val) -> pd.Period:
+    """
+    Soporta:
+    - 'ene-25', 'feb-25', 'ene-2025'
+    - datetime/timestamp
+    - serial de Excel (número)
+    """
     if pd.isna(val):
         return pd.NaT
-    if isinstance(val, pd.Period):
-        return val.asfreq("M")
+
+    # 1) Si ya viene como fecha
     if isinstance(val, (datetime, pd.Timestamp)):
         return pd.Period(val, freq="M")
 
+    # 2) Si viene como número (serial de Excel)
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        # Muchos excels guardan fechas como serial (ej. 45658)
+        # Convertimos a fecha usando origen Excel clásico
+        try:
+            dt = pd.to_datetime(val, unit="D", origin="1899-12-30")
+            return pd.Period(dt, freq="M")
+        except Exception:
+            pass
+
+    # 3) Si viene como texto (ene-25)
     s = str(val).strip().lower()
-    s = s.replace(".", "").replace("_", "-").replace("/", "-").replace(" ", "")
+
+    # limpia basura típica: puntos, espacios, dobles guiones
+    s = s.replace(".", "").replace(" ", "").replace("_", "-").replace("/", "-")
+    s = re.sub(r"[^a-z0-9\-]", "", s)  # deja solo letras/números/guiones
+
+    # soporta "ene-25", "ene25", "ene-2025"
     m = re.match(r"^([a-z]{3})-?(\d{2}|\d{4})$", s)
     if not m:
-        m2 = re.match(r"^([a-z]{3})(\d{2}|\d{4})$", s)
-        if not m2:
-            return pd.NaT
-        mon, yr = m2.group(1), m2.group(2)
-    else:
-        mon, yr = m.group(1), m.group(2)
+        return pd.NaT
+
+    mon, yr = m.group(1), m.group(2)
 
     if mon not in MONTHS_ES:
         return pd.NaT
+
     month = MONTHS_ES[mon]
     year = int(yr)
     if year < 100:
