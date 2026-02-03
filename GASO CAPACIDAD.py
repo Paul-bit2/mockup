@@ -270,7 +270,8 @@ def df_to_reportlab_table(df: pd.DataFrame, max_rows=30):
     )
     return t
 
-def df_to_heatmap_pdf_table(df: pd.DataFrame, max_rows=30):
+def df_to_heatmap_pdf_table(df: pd.DataFrame, max_rows=30, exclude_cols=None):
+    
     """
     Convierte DataFrame a tabla PDF con heatmap verde->amarillo->rojo
     (ignora primera columna si es texto tipo '# Económico')
@@ -278,16 +279,26 @@ def df_to_heatmap_pdf_table(df: pd.DataFrame, max_rows=30):
     show = df.copy()
     if len(show) > max_rows:
         show = show.head(max_rows).copy()
+    if exclude_cols is None:
+    exclude_cols = ["Total general"]
 
     data = [list(show.columns)] + show.values.tolist()
 
     table = Table(data, repeatRows=1)
+    table._argW = [1.0 * inch] + [0.45 * inch] * (len(show.columns) - 1)
+
 
     styles = [
         ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, 0), 7),     # encabezado
+        ("FONTSIZE", (0, 1), (-1, -1), 6),    # cuerpo (más pequeño)
+        ("LEFTPADDING", (0, 0), (-1, -1), 2),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+        ("TOPPADDING", (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
         ("ALIGN", (1, 1), (-1, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]
@@ -297,6 +308,8 @@ def df_to_heatmap_pdf_table(df: pd.DataFrame, max_rows=30):
     for j, col in enumerate(show.columns):
         if j == 0:
             continue
+        if col in exclude_cols:
+            continue
         if pd.api.types.is_numeric_dtype(show[col]):
             num_cols_idx.append(j)
 
@@ -304,6 +317,11 @@ def df_to_heatmap_pdf_table(df: pd.DataFrame, max_rows=30):
     values = []
     for j in num_cols_idx:
         values.extend(show.iloc[:, j].dropna().tolist())
+        
+    if "Total general" in show.columns:
+        tg_idx = list(show.columns).index("Total general")
+        styles.append(("BACKGROUND", (tg_idx, 1), (tg_idx, -1), colors.HexColor("#E5E7EB")))
+        styles.append(("FONTNAME", (tg_idx, 0), (tg_idx, -1), "Helvetica-Bold"))
 
     if not values:
         table.setStyle(TableStyle(styles))
@@ -704,7 +722,7 @@ def make_pdf_km_report_bytes(title, filtros_txt, kpis, fig1_png, fig2_png, tabla
     story.append(Spacer(1, 12))
 
     story.append(Paragraph("<b>4) Top acumulado (matriz)</b>", styles["Heading2"]))
-    story.append(df_to_heatmap_pdf_table(top_mat_df, max_rows=30))
+    story.append(df_to_heatmap_pdf_table(top_mat_df, max_rows=30, exclude_cols=["Total general"]))
     story.append(Spacer(1, 12))
 
 
