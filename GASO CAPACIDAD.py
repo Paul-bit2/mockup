@@ -343,7 +343,7 @@ tg_vmin = min(tg_vals) if tg_vals else None
 tg_vmax = max(tg_vals) if tg_vals else None
 tg_span = (tg_vmax - tg_vmin) if (tg_vals and tg_vmax != tg_vmin) else 1
 
-    def val_to_color(v):
+        def val_to_color(v):
         # normaliza 0-1
         x = (v - vmin) / span
 
