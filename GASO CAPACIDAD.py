@@ -593,7 +593,7 @@ def matrix_mes_equipo(df: pd.DataFrame) -> pd.DataFrame:
     return pv.reset_index().rename(columns={K_COL_EQUIPO: "Vehículo"})
 
 
-def make_pdf_km_report_bytes(title, filtros_txt, kpis, fig1_png, fig2_png, tabla_mes, top_total, top_mes_df, gps_df):
+def make_pdf_km_report_bytes(title, filtros_txt, kpis, fig1_png, fig2_png, tabla_mes, top_mat_df, top_total, top_mes_df, gps_df):
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf,
@@ -631,6 +631,10 @@ def make_pdf_km_report_bytes(title, filtros_txt, kpis, fig1_png, fig2_png, tabla
 
     story.append(Paragraph("<b>3) Resumen mensual</b>", styles["Heading2"]))
     story.append(df_to_reportlab_table(tabla_mes, max_rows=24))
+    story.append(Spacer(1, 12))
+
+    story.append(Paragraph("<b>4) Top acumulado (matriz)</b>", styles["Heading2"]))
+    story.append(df_to_reportlab_table(top_mat_df, max_rows=30))
     story.append(Spacer(1, 12))
 
     story.append(Paragraph("<b>4) Top acumulado + servicios</b>", styles["Heading2"]))
@@ -952,9 +956,10 @@ with tab_km:
     st.pyplot(fig_barras_y_diferencia(t_mes), use_container_width=True)
 
     # 3) TOP ACUMULADO
-    st.markdown("### 3) TOP ACUMULADO")
-    top_mat = matrix_top_acumulado_formato(df_km_f)
-    st.dataframe(top_mat, use_container_width=True, hide_index=True)
+    num_cols = [c for c in top_mat.columns if c != "# Económico"]
+    styled_top = top_mat.style.background_gradient(cmap="RdYlGn_r", subset=num_cols)
+
+    st.dataframe(styled_top, use_container_width=True, hide_index=True)
 
     # 4) Servicios requeridos
     st.markdown("### 4) Servicios requeridos (cada 10,000 km)")
@@ -1026,6 +1031,7 @@ with tab_km:
         fig1_png=fig_to_png_bytes(fig_barras_y_diferencia(t_mes)),
         fig2_png=fig_to_png_bytes(fig_promedio(t_mes)),
         tabla_mes=t_mes_display,
+        top_mat_df=top_mat,
         top_total=top_total,
         top_mes_df=top_m,
         gps_df=gps_df
