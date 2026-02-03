@@ -278,12 +278,12 @@ def df_to_heatmap_pdf_table(df: pd.DataFrame, max_rows=30, exclude_cols=None):
     """
     show = df.copy()
     for col in show.columns:
-    if pd.api.types.is_numeric_dtype(show[col]):
-        show[col] = show[col].astype(float).round(2)
-    if len(show) > max_rows:
-        show = show.head(max_rows).copy()
-    if exclude_cols is None:
-        exclude_cols = ["Total general"]
+        if pd.api.types.is_numeric_dtype(show[col]):
+            show[col] = show[col].astype(float).round(2)
+        if len(show) > max_rows:
+            show = show.head(max_rows).copy()
+        if exclude_cols is None:
+            exclude_cols = ["Total general"]
 
     data = [list(show.columns)] + show.values.tolist()
 
