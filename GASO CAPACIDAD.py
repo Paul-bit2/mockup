@@ -63,7 +63,7 @@ def is_in_inventory(row: pd.Series) -> bool:
     - Si ESTATUS DE SALIDA == "SALIDA" => NO contar
     - Otro caso => SÍ contar
     """
-    estatus = row.get("ESTATUS DE SALIDA")
+    estatus = row.get("ESTATUS SALIDA")
     estatus_txt = "" if pd.isna(estatus) else str(estatus).strip().upper()
     return estatus_txt != "SALIDA"
 
