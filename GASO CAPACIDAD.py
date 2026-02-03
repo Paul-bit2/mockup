@@ -358,13 +358,13 @@ def val_to_color(v):
         return colors.Color(r / 255, g / 255, b / 255)
 
     # aplica color por celda
-    for row_i in range(1, len(show) + 1):
-        for col_j in num_cols_idx:
-            val = show.iloc[row_i - 1, col_j]
-            if pd.notna(val):
-                styles.append(
-                    ("BACKGROUND", (col_j, row_i), (col_j, row_i), val_to_color(float(val)))
-                )
+for row_i in range(1, len(show) + 1):
+    for col_j in num_cols_idx:
+        val = show.iloc[row_i - 1, col_j]
+        if pd.notna(val):
+            tyles.append(
+                ("BACKGROUND", (col_j, row_i), (col_j, row_i), val_to_color(float(val)))
+            )
     if tg_idx is not None and tg_vals:
         for row_i in range(1, len(show) + 1):
             val = show.iloc[row_i - 1, tg_idx]
