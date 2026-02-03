@@ -285,7 +285,7 @@ def df_to_heatmap_pdf_table(df: pd.DataFrame, max_rows=30, exclude_cols=None):
     data = [list(show.columns)] + show.values.tolist()
 
     table = Table(data, repeatRows=1)
-    table._argW = [1.0 * inch] + [0.45 * inch] * (len(show.columns) - 1)
+    table._argW = [1.2 * inch] + [0.55 * inch] * (len(show.columns) - 1)
 
 
     styles = [
@@ -293,12 +293,13 @@ def df_to_heatmap_pdf_table(df: pd.DataFrame, max_rows=30, exclude_cols=None):
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, 0), 7),     # encabezado
-        ("FONTSIZE", (0, 1), (-1, -1), 6),    # cuerpo (más pequeño)
-        ("LEFTPADDING", (0, 0), (-1, -1), 2),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-        ("TOPPADDING", (0, 0), (-1, -1), 1),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+        ("FONTSIZE", (0, 0), (-1, 0), 8),
+        ("FONTSIZE", (0, 1), (-1, -1), 7),
+        ("LEFTPADDING", (0, 0), (-1, -1), 3),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+
         ("ALIGN", (1, 1), (-1, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]
@@ -318,6 +319,7 @@ def df_to_heatmap_pdf_table(df: pd.DataFrame, max_rows=30, exclude_cols=None):
     for j in num_cols_idx:
         values.extend(show.iloc[:, j].dropna().tolist())
         
+        
     if "Total general" in show.columns:
         tg_idx = list(show.columns).index("Total general")
         styles.append(("BACKGROUND", (tg_idx, 1), (tg_idx, -1), colors.HexColor("#E5E7EB")))
@@ -330,6 +332,16 @@ def df_to_heatmap_pdf_table(df: pd.DataFrame, max_rows=30, exclude_cols=None):
     vmin = min(values)
     vmax = max(values)
     span = vmax - vmin if vmax != vmin else 1
+
+    tg_idx = None
+    tg_vals = []
+    if "Total general" in show.columns:
+        tg_idx = list(show.columns).index("Total general")
+        tg_vals = [v for v in show["Total general"].dropna().tolist()]
+    
+tg_vmin = min(tg_vals) if tg_vals else None
+tg_vmax = max(tg_vals) if tg_vals else None
+tg_span = (tg_vmax - tg_vmin) if (tg_vals and tg_vmax != tg_vmin) else 1
 
     def val_to_color(v):
         # normaliza 0-1
@@ -353,6 +365,24 @@ def df_to_heatmap_pdf_table(df: pd.DataFrame, max_rows=30, exclude_cols=None):
                 styles.append(
                     ("BACKGROUND", (col_j, row_i), (col_j, row_i), val_to_color(float(val)))
                 )
+    if tg_idx is not None and tg_vals:
+        for row_i in range(1, len(show) + 1):
+            val = show.iloc[row_i - 1, tg_idx]
+            if pd.notna(val):
+                # normaliza con escala de total general
+                x = (float(val) - tg_vmin) / tg_span if tg_span else 0.0
+
+                # verde -> amarillo -> rojo (igual que val_to_color)
+                if x < 0.5:
+                    r = int(255 * (x * 2))
+                    g = 255
+                else:
+                    r = 255
+                    g = int(255 * (1 - (x - 0.5) * 2))
+                b = 0
+
+                styles.append(("BACKGROUND", (tg_idx, row_i), (tg_idx, row_i), colors.Color(r/255, g/255, b/255)))
+
 
     table.setStyle(TableStyle(styles))
     return table
@@ -722,7 +752,7 @@ def make_pdf_km_report_bytes(title, filtros_txt, kpis, fig1_png, fig2_png, tabla
     story.append(Spacer(1, 12))
 
     story.append(Paragraph("<b>4) Top acumulado (matriz)</b>", styles["Heading2"]))
-    story.append(df_to_heatmap_pdf_table(top_mat_df, max_rows=30, exclude_cols=["Total general"]))
+    story.append(df_to_heatmap_pdf_table(top_mat_df, max_rows=30, exclude_cols=[]))
     story.append(Spacer(1, 12))
 
 
