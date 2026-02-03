@@ -956,8 +956,15 @@ with tab_km:
     st.pyplot(fig_barras_y_diferencia(t_mes), use_container_width=True)
 
     # 3) TOP ACUMULADO
+    st.markdown("### 3) TOP ACUMULADO")
+
+    top_mat = matrix_top_acumulado_formato(df_km_f)
+
     num_cols = [c for c in top_mat.columns if c != "# Económico"]
-    styled_top = top_mat.style.background_gradient(cmap="RdYlGn_r", subset=num_cols)
+    styled_top = top_mat.style.background_gradient(
+        cmap="RdYlGn_r",
+        subset=num_cols
+    )
 
     st.dataframe(styled_top, use_container_width=True, hide_index=True)
 
