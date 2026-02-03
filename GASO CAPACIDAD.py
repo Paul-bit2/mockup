@@ -347,38 +347,33 @@ K_COL_MES = "MES"
 K_COL_EQUIPO = "NOMBRE DEL EQUIPO"
 K_COL_KM = "KILOMETRAJE"
 
+
 def parse_mes_to_period(val) -> pd.Period:
     """
     Soporta:
     - 'ene-25', 'feb-25', 'ene-2025'
     - datetime/timestamp
-    - serial de Excel (número)
+    - serial Excel (número)
     """
     if pd.isna(val):
         return pd.NaT
 
-    # 1) Si ya viene como fecha
+    # ya viene como fecha
     if isinstance(val, (datetime, pd.Timestamp)):
         return pd.Period(val, freq="M")
 
-    # 2) Si viene como número (serial de Excel)
+    # serial Excel (int/float)
     if isinstance(val, (int, float)) and not isinstance(val, bool):
-        # Muchos excels guardan fechas como serial (ej. 45658)
-        # Convertimos a fecha usando origen Excel clásico
         try:
             dt = pd.to_datetime(val, unit="D", origin="1899-12-30")
             return pd.Period(dt, freq="M")
         except Exception:
             pass
 
-    # 3) Si viene como texto (ene-25)
     s = str(val).strip().lower()
-
-    # limpia basura típica: puntos, espacios, dobles guiones
     s = s.replace(".", "").replace(" ", "").replace("_", "-").replace("/", "-")
-    s = re.sub(r"[^a-z0-9\-]", "", s)  # deja solo letras/números/guiones
+    s = re.sub(r"[^a-z0-9\-]", "", s)
 
-    # soporta "ene-25", "ene25", "ene-2025"
     m = re.match(r"^([a-z]{3})-?(\d{2}|\d{4})$", s)
     if not m:
         return pd.NaT
@@ -446,6 +441,7 @@ def build_km_dataset(df_raw: pd.DataFrame) -> pd.DataFrame:
 
     df[K_COL_KM] = df[K_COL_KM].apply(to_float)
 
+    # por si hay duplicados (mismo equipo y mes)
     df = (
         df.groupby([K_COL_EQUIPO, K_COL_MES], dropna=False)[K_COL_KM]
         .sum()
@@ -500,6 +496,11 @@ def style_table_minmax(df: pd.DataFrame, col: str):
 
 
 def fig_barras_y_diferencia(month_df: pd.DataFrame):
+    """
+    Barras = suma_km
+    Línea = autos
+    Línea roja encima de barras (como pediste)
+    """
     if month_df.empty:
         fig, ax = plt.subplots(figsize=(10, 3))
         ax.text(0.5, 0.5, "Sin datos.", ha="center", va="center")
@@ -507,23 +508,33 @@ def fig_barras_y_diferencia(month_df: pd.DataFrame):
         return fig
 
     df = month_df.copy()
-    df["delta"] = df["suma_km"].diff().fillna(0.0)
-
     x = df["mes_label"].tolist()
     y = df["suma_km"].tolist()
-    d = df
+    autos = df["autos"].tolist()
 
     fig, ax1 = plt.subplots(figsize=(12, 4))
-    ax1.bar(x, y)
+
+    # barras (abajo)
+    ax1.bar(x, y, zorder=1)
+    ax1.set_axisbelow(True)
     ax1.set_ylabel("Suma de Kilometraje")
-    ax1.set_title("Suma mensual de kilometraje y diferencia vs mes anterior")
+    ax1.set_title("Suma mensual de kilometraje y autos")
 
+    # línea (arriba)
     ax2 = ax1.twinx()
-    ax2.plot(x, df["delta"].tolist(), marker="o")
-    ax2.set_ylabel("Diferencia (Δ)")
+    ax2.plot(
+        x,
+        autos,
+        marker="o",
+        color="red",     # cambia a "black" si la quieres negra
+        linewidth=2.5,
+        zorder=10
+    )
+    ax2.set_ylabel("Autos")
 
-    for i, val in enumerate(df["delta"].tolist()):
-        ax2.text(i, val, f"{val:,.0f}", ha="center", va="bottom" if val >= 0 else "top")
+    # etiqueta de autos
+    for i, val in enumerate(autos):
+        ax2.text(i, val, f"{val}", ha="center", va="bottom")
 
     plt.tight_layout()
     return fig
@@ -610,7 +621,7 @@ def make_pdf_km_report_bytes(title, filtros_txt, kpis, fig1_png, fig2_png, tabla
     ))
     story.append(Spacer(1, 12))
 
-    story.append(Paragraph("<b>1) Suma mensual y diferencia</b>", styles["Heading2"]))
+    story.append(Paragraph("<b>1) Suma mensual + autos (línea roja)</b>", styles["Heading2"]))
     story.append(Image(io.BytesIO(fig1_png), width=10.5 * inch, height=3.2 * inch))
     story.append(Spacer(1, 12))
 
@@ -638,11 +649,19 @@ def make_pdf_km_report_bytes(title, filtros_txt, kpis, fig1_png, fig2_png, tabla
     return buf.getvalue()
 
 
-def to_excel_km_bytes(tabla_mes, matriz_equipo_mes, top_acum, top_mes_df, gps_df):
+def to_excel_km_bytes(tabla_mes, matriz_equipo_mes, top_acum, top_mes_df, gps_df, datos_km_df):
+    """
+    Excel completo + semi-dashboard.
+    - NO recorta tablas
+    - Incluye datos crudos completos (datos_km_df)
+    - Incluye hoja Dashboard con gráfica (barras + línea)
+    """
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
     from openpyxl.formatting.rule import ColorScaleRule
     from openpyxl.utils.dataframe import dataframe_to_rows
+    from openpyxl.chart import BarChart, LineChart, Reference
+    from openpyxl.chart.label import DataLabelList
 
     wb = Workbook()
     wb.remove(wb.active)
@@ -661,6 +680,7 @@ def to_excel_km_bytes(tabla_mes, matriz_equipo_mes, top_acum, top_mes_df, gps_df
                     cell.fill = header_fill
                     cell.font = header_font
                     cell.alignment = center
+
         ws.freeze_panes = freeze
         ws.auto_filter.ref = ws.dimensions
 
@@ -671,21 +691,78 @@ def to_excel_km_bytes(tabla_mes, matriz_equipo_mes, top_acum, top_mes_df, gps_df
                 if c.value is None:
                     continue
                 max_len = max(max_len, len(str(c.value)))
-            ws.column_dimensions[col].width = min(45, max_len + 2)
+            ws.column_dimensions[col].width = min(60, max_len + 2)
         return ws
 
-    ws1 = add_sheet("Resumen_Mensual", tabla_mes.copy())
-    ws1.conditional_formatting.add(
+    # Datos crudos (TODO)
+    add_sheet("Datos_Kilometraje", datos_km_df.copy(), freeze="A2")
+
+    # Resumen mensual
+    ws_m = add_sheet("Resumen_Mensual", tabla_mes.copy(), freeze="A2")
+    ws_m.conditional_formatting.add(
         "B2:B1048576",
-        ColorScaleRule(start_type="min", start_color="63BE7B",
-                       mid_type="percentile", mid_value=50, mid_color="FFEB84",
-                       end_type="max", end_color="F8696B")
+        ColorScaleRule(
+            start_type="min", start_color="63BE7B",
+            mid_type="percentile", mid_value=50, mid_color="FFEB84",
+            end_type="max", end_color="F8696B"
+        )
     )
 
-    add_sheet("Top_Acumulado", top_acum.copy())
-    add_sheet("Top_Mes", top_mes_df.copy())
-    add_sheet("GPS_Revision", gps_df.copy())
+    # Resto de hojas completas
+    add_sheet("Top_Acumulado", top_acum.copy(), freeze="A2")
+    add_sheet("Top_Mes", top_mes_df.copy(), freeze="A2")
+    add_sheet("GPS_Revision", gps_df.copy(), freeze="A2")
     add_sheet("Matriz_Equipo_Mes", matriz_equipo_mes.copy(), freeze="B2")
+
+    # Dashboard (semi)
+    ws_dash = wb.create_sheet("Dashboard")
+    ws_dash["A1"] = "GASO Comunicaciones — Dashboard de Kilometraje"
+    ws_dash["A1"].font = Font(bold=True, size=16)
+
+    ws_dash["A3"] = "Resumen mensual"
+    ws_dash["A3"].font = Font(bold=True, size=12)
+
+    start_row = 5
+    for r_idx, row in enumerate(dataframe_to_rows(tabla_mes, index=False, header=True), start=start_row):
+        ws_dash.append(row)
+        if r_idx == start_row:
+            for c_idx in range(1, len(row) + 1):
+                cell = ws_dash.cell(row=r_idx, column=c_idx)
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = center
+
+    for col in ["A", "B", "C", "D"]:
+        ws_dash.column_dimensions[col].width = 22
+
+    last_row = start_row + len(tabla_mes)
+
+    # barras: col B (Suma)
+    bar = BarChart()
+    bar.type = "col"
+    bar.title = "Suma mensual de kilometraje"
+    bar.y_axis.title = "Kilometraje"
+    bar.dataLabels = DataLabelList()
+    bar.dataLabels.showVal = False
+
+    data_suma = Reference(ws_dash, min_col=2, min_row=start_row, max_row=last_row)  # incluye header
+    cats = Reference(ws_dash, min_col=1, min_row=start_row + 1, max_row=last_row)
+    bar.add_data(data_suma, titles_from_data=True)
+    bar.set_categories(cats)
+
+    # línea: col C (Autos)
+    line = LineChart()
+    line.y_axis.axId = 200
+    line.y_axis.title = "Autos"
+    line.y_axis.majorGridlines = None
+
+    data_autos = Reference(ws_dash, min_col=3, min_row=start_row, max_row=last_row)
+    line.add_data(data_autos, titles_from_data=True)
+    line.set_categories(cats)
+
+    bar += line
+    ws_dash.add_chart(bar, "F5")
+    ws_dash.freeze_panes = "A5"
 
     out = io.BytesIO()
     wb.save(out)
@@ -850,7 +927,7 @@ with tab_km:
 
     meses = sorted(df_km_f[K_COL_MES].unique())
     if not meses:
-        st.error("No hay meses en el rango seleccionado.")
+        st.error("No hay meses en el rango seleccionado. Revisa que la columna 'Mes' esté bien formateada.")
         st.stop()
 
     mes_labels = [month_label(p) for p in meses]
@@ -869,11 +946,11 @@ with tab_km:
     st.markdown("### 1) Resumen mensual")
     st.dataframe(style_table_minmax(t_mes_display, "Suma de kilometraje"), use_container_width=True, hide_index=True)
 
-    # 2) Grafica barras + delta
-    st.markdown("### 2) Gráfica: barras y diferencia entre meses")
+    # 2) Gráfica barras + línea (autos, roja)
+    st.markdown("### 2) Gráfica: barras (kilometraje) + línea (autos)")
     st.pyplot(fig_barras_y_diferencia(t_mes), use_container_width=True)
 
-    # 3) TOP ACUMULADO (formato tipo pivot)
+    # 3) TOP ACUMULADO
     st.markdown("### 3) TOP ACUMULADO")
     top_mat = matrix_top_acumulado_formato(df_km_f)
     st.dataframe(top_mat, use_container_width=True, hide_index=True)
@@ -911,17 +988,27 @@ with tab_km:
     st.markdown("### Descargas")
     matriz_eq_mes = matrix_mes_equipo(df_km_f)
 
+    # ===== Datos completos para Excel (sin recortes) =====
+    datos_km_df = df_km_f.copy()
+    datos_km_df["MES_LABEL"] = datos_km_df["MES"].apply(month_label)
+    datos_km_df = datos_km_df.rename(columns={
+        "NOMBRE DEL EQUIPO": "Vehículo",
+        "KILOMETRAJE": "Kilometraje"
+    })
+    datos_km_df = datos_km_df[["Vehículo", "MES_LABEL", "Kilometraje"]].sort_values(["MES_LABEL", "Vehículo"])
+
     excel_bytes = to_excel_km_bytes(
         tabla_mes=t_mes_display,
         matriz_equipo_mes=matriz_eq_mes,
         top_acum=top_total,
         top_mes_df=top_m,
-        gps_df=gps_df
+        gps_df=gps_df,
+        datos_km_df=datos_km_df
     )
     st.download_button(
-        "⬇️ Descargar Excel (Kilometraje, con colores)",
+        "⬇️ Descargar Excel (Kilometraje completo + Dashboard)",
         data=excel_bytes,
-        file_name=f"GASO_kilometraje_{mode_period.replace(' ', '_')}_{mes_sel_label}.xlsx",
+        file_name=f"GASO_kilometraje_completo_{mode_period.replace(' ', '_')}_{mes_sel_label}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
