@@ -406,7 +406,7 @@ if "Total general" in show.columns:
 
 
     table.setStyle(TableStyle(styles))
-return table
+    return table
 
 
 
