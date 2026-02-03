@@ -37,7 +37,6 @@ PRESET_XDOCK_CAPACITY_M2 = {
     "Gaso- Querétaro-E-NS": 800.0,
 }
 
-# Tu columna S se llama "ESTATUS DE SALIDA"
 REQUIRED_COLS = [
     "CARRIER",
     "XDOCK",
@@ -60,9 +59,9 @@ def ensure_required_columns(df: pd.DataFrame) -> list:
 
 def is_in_inventory(row: pd.Series) -> bool:
     """
-    Regla del usuario:
-    - Si ESTATUS DE SALIDA == "SALIDA" => ya no está en crossdock => NO contar
-    - Cualquier otro caso => SÍ contar
+    Regla:
+    - Si ESTATUS DE SALIDA == "SALIDA" => NO contar
+    - Otro caso => SÍ contar
     """
     estatus = row.get("ESTATUS DE SALIDA")
     estatus_txt = "" if pd.isna(estatus) else str(estatus).strip().upper()
@@ -71,7 +70,7 @@ def is_in_inventory(row: pd.Series) -> bool:
 
 def compute_row_m2(row: pd.Series) -> float:
     """
-    Como quieres "1 fila = 1 pallet", el m² por fila depende SOLO del TIPO DE PALLET.
+    1 fila = 1 pallet => m² depende SOLO del TIPO DE PALLET.
     """
     pallet_type = str(row.get("TIPO DE PALLET", "")).strip().upper()
     pallet_type = " ".join(pallet_type.split())  # normaliza espacios
@@ -88,14 +87,17 @@ def build_report(df_in: pd.DataFrame, capacity_map: dict, carriers_filter: list 
     if missing:
         raise ValueError(f"Faltan columnas requeridas: {missing}")
 
-    # Normaliza campos clave
     df["CARRIER"] = df["CARRIER"].astype(str).str.strip()
     df["XDOCK"] = df["XDOCK"].astype(str).str.strip()
     df["TIPO DE PALLET"] = (
-        df["TIPO DE PALLET"].astype(str).str.strip().str.upper().str.replace(r"\s+", " ", regex=True)
+        df["TIPO DE PALLET"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .str.replace(r"\s+", " ", regex=True)
     )
 
-    # Solo activos (sin SALIDA)
+    # Activos
     active = df[df.apply(is_in_inventory, axis=1)].copy()
 
     # Filtra carriers
@@ -105,11 +107,10 @@ def build_report(df_in: pd.DataFrame, capacity_map: dict, carriers_filter: list 
         active = active[active["_CARRIER_UP"].isin(wanted)].copy()
         active.drop(columns=["_CARRIER_UP"], inplace=True)
 
-    # ✅ Conteo correcto según tu regla:
     # 1 fila = 1 pallet
     active["PALLETS_FILA"] = 1
 
-    # m² por fila y capacidad
+    # m² y capacidad
     active["M2_OCUPADOS_FILA"] = active.apply(compute_row_m2, axis=1)
     active["CAPACIDAD_M2_XDOCK"] = active["XDOCK"].map(capacity_map)
 
@@ -164,12 +165,14 @@ def build_report(df_in: pd.DataFrame, capacity_map: dict, carriers_filter: list 
     return resumen, detalle, pendientes, active
 
 
-def to_excel_bytes(resumen, detalle, pendientes):
+def to_excel_bytes(resumen, detalle, pendientes, conteo_xdock_tipo, conteo_carrier_xdock_tipo):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         resumen.to_excel(writer, sheet_name="Resumen", index=False)
         detalle.to_excel(writer, sheet_name="Detalle_Activos", index=False)
         pendientes.to_excel(writer, sheet_name="Pendientes_Config", index=False)
+        conteo_xdock_tipo.to_excel(writer, sheet_name="Conteo_XDOCK_Tipo", index=False)
+        conteo_carrier_xdock_tipo.to_excel(writer, sheet_name="Conteo_Carrier_XDOCK_Tipo", index=False)
     output.seek(0)
     return output.getvalue()
 
@@ -246,42 +249,54 @@ opts = ["TODOS"] + carriers_detectados
 default = [c for c in DEFAULT_TARGET_CARRIERS if c in carriers_detectados] or ["TODOS"]
 carriers_filter = st.multiselect("Selecciona carriers", options=opts, default=default)
 
-st.subheader("3) Conteo de pallets por crossdock (ACTIVOS)")
-# Muestra conteo activo antes de calcular todo, para que lo veas claro
+# =========================
+# 3) Conteos por XDOCK y TIPO (lo que pediste)
+# =========================
+st.subheader("3) Conteos de pallets ACTIVAS por Crossdock y Tipo")
+
 tmp = df[df.apply(is_in_inventory, axis=1)].copy()
 tmp["CARRIER"] = tmp["CARRIER"].astype(str).str.strip()
 tmp["XDOCK"] = tmp["XDOCK"].astype(str).str.strip()
+tmp["TIPO DE PALLET"] = (
+    tmp["TIPO DE PALLET"].astype(str).str.strip().str.upper().str.replace(r"\s+", " ", regex=True)
+)
 
-conteo_xdock = (
-    tmp.groupby(["XDOCK"], dropna=False)
+# Conteo por XDOCK + Tipo de pallet
+conteo_xdock_tipo = (
+    tmp.groupby(["XDOCK", "TIPO DE PALLET"], dropna=False)
     .size()
     .reset_index(name="pallets_activas")
-    .sort_values("pallets_activas", ascending=False)
+    .sort_values(["XDOCK", "pallets_activas"], ascending=[True, False])
     .reset_index(drop=True)
 )
-st.dataframe(conteo_xdock, use_container_width=True, hide_index=True)
 
-st.markdown("**Conteo por Carrier + XDOCK (activos)**")
-conteo_carrier_xdock = (
-    tmp.groupby(["CARRIER", "XDOCK"], dropna=False)
-    .size()
-    .reset_index(name="pallets_activas")
-    .sort_values(["CARRIER", "pallets_activas"], ascending=[True, False])
-    .reset_index(drop=True)
-)
-st.dataframe(conteo_carrier_xdock, use_container_width=True, hide_index=True)
-
-colA, colB = st.columns(2)
-with colA:
-    st.write("**Catálogo m² por tipo de pallet**")
-    st.dataframe(
-        pd.DataFrame({"TIPO DE PALLET": list(PALLET_M2_BY_TYPE.keys()), "M2": list(PALLET_M2_BY_TYPE.values())}),
-        use_container_width=True,
-        hide_index=True,
+# Pivot: filas = XDOCK, columnas = tipo, valores = conteo
+pivot_xdock_tipo = (
+    conteo_xdock_tipo.pivot_table(
+        index="XDOCK",
+        columns="TIPO DE PALLET",
+        values="pallets_activas",
+        aggfunc="sum",
+        fill_value=0,
     )
-with colB:
-    st.write("**XDOCK con capacidad cargada (vista rápida)**")
-    st.dataframe(cap_edit.sort_values("XDOCK"), use_container_width=True, hide_index=True)
+    .reset_index()
+)
+
+st.markdown("**A) Tabla por XDOCK y Tipo (lista)**")
+st.dataframe(conteo_xdock_tipo, use_container_width=True, hide_index=True)
+
+st.markdown("**B) Tabla tipo matriz (XDOCK vs Tipo)**")
+st.dataframe(pivot_xdock_tipo, use_container_width=True, hide_index=True)
+
+st.markdown("**C) Por Carrier + XDOCK + Tipo (lista)**")
+conteo_carrier_xdock_tipo = (
+    tmp.groupby(["CARRIER", "XDOCK", "TIPO DE PALLET"], dropna=False)
+    .size()
+    .reset_index(name="pallets_activas")
+    .sort_values(["CARRIER", "XDOCK", "pallets_activas"], ascending=[True, True, False])
+    .reset_index(drop=True)
+)
+st.dataframe(conteo_carrier_xdock_tipo, use_container_width=True, hide_index=True)
 
 st.subheader("4) Generar reporte (m² y % ocupación)")
 if st.button("📊 Calcular ocupación", type="primary"):
@@ -317,7 +332,7 @@ if st.button("📊 Calcular ocupación", type="primary"):
         st.warning("⚠️ Hay pendientes que debes completar para que el % sea correcto.")
         st.dataframe(pendientes, use_container_width=True, hide_index=True)
 
-    excel_bytes = to_excel_bytes(resumen, detalle, pendientes)
+    excel_bytes = to_excel_bytes(resumen, detalle, pendientes, conteo_xdock_tipo, conteo_carrier_xdock_tipo)
     st.download_button(
         "⬇️ Descargar reporte en Excel",
         data=excel_bytes,
