@@ -441,13 +441,7 @@ def build_km_dataset(df_raw: pd.DataFrame) -> pd.DataFrame:
 
     df[K_COL_KM] = df[K_COL_KM].apply(to_float)
 
-    # por si hay duplicados (mismo equipo y mes)
-    df = (
-        df.groupby([K_COL_EQUIPO, K_COL_MES], dropna=False)[K_COL_KM]
-        .sum()
-        .reset_index()
-    )
-    return df
+    return df[[K_COL_EQUIPO, K_COL_MES, K_COL_KM]].copy()
 
 
 def filter_period(df: pd.DataFrame, mode: str) -> pd.DataFrame:
@@ -463,11 +457,17 @@ def filter_period(df: pd.DataFrame, mode: str) -> pd.DataFrame:
 def monthly_summary(df: pd.DataFrame) -> pd.DataFrame:
     g = df.groupby(K_COL_MES).agg(
         suma_km=(K_COL_KM, "sum"),
-        autos=(K_COL_EQUIPO, "nunique"),
+        autos=(K_COL_KM, "size"),   # ← FILAS reales por mes
     ).reset_index()
-    g["promedio_km_por_auto"] = g.apply(lambda r: (r["suma_km"] / r["autos"]) if r["autos"] else 0.0, axis=1)
+
+    g["promedio_km_por_auto"] = g.apply(
+        lambda r: (r["suma_km"] / r["autos"]) if r["autos"] else 0.0,
+        axis=1
+    )
+
     g["mes_label"] = g[K_COL_MES].apply(month_label)
     g = g.sort_values(K_COL_MES).reset_index(drop=True)
+
     return g[["mes_label", "suma_km", "autos", "promedio_km_por_auto"]]
 
 
