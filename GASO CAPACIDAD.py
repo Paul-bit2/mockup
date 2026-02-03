@@ -405,10 +405,8 @@ if "Total general" in show.columns:
         styles.append(("FONTNAME", (tg_idx, 0), (tg_idx, -1), "Helvetica-Bold"))
 
 
-    table.setStyle(TableStyle(styles))
-    return table
-
-
+table.setStyle(TableStyle(styles))
+return table
 
 def make_pdf_report_bytes(
     title: str,
