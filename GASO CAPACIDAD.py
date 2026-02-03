@@ -270,6 +270,76 @@ def df_to_reportlab_table(df: pd.DataFrame, max_rows=30):
     )
     return t
 
+def df_to_heatmap_pdf_table(df: pd.DataFrame, max_rows=30):
+    """
+    Convierte DataFrame a tabla PDF con heatmap verde->amarillo->rojo
+    (ignora primera columna si es texto tipo '# Económico')
+    """
+    show = df.copy()
+    if len(show) > max_rows:
+        show = show.head(max_rows).copy()
+
+    data = [list(show.columns)] + show.values.tolist()
+
+    table = Table(data, repeatRows=1)
+
+    styles = [
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("ALIGN", (1, 1), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]
+
+    # columnas numéricas (ignoramos la primera si es texto)
+    num_cols_idx = []
+    for j, col in enumerate(show.columns):
+        if j == 0:
+            continue
+        if pd.api.types.is_numeric_dtype(show[col]):
+            num_cols_idx.append(j)
+
+    # saca todos los valores para normalizar color
+    values = []
+    for j in num_cols_idx:
+        values.extend(show.iloc[:, j].dropna().tolist())
+
+    if not values:
+        table.setStyle(TableStyle(styles))
+        return table
+
+    vmin = min(values)
+    vmax = max(values)
+    span = vmax - vmin if vmax != vmin else 1
+
+    def val_to_color(v):
+        # normaliza 0-1
+        x = (v - vmin) / span
+
+        # verde -> amarillo -> rojo
+        if x < 0.5:
+            r = int(255 * (x * 2))
+            g = 255
+        else:
+            r = 255
+            g = int(255 * (1 - (x - 0.5) * 2))
+        b = 0
+        return colors.Color(r / 255, g / 255, b / 255)
+
+    # aplica color por celda
+    for row_i in range(1, len(show) + 1):
+        for col_j in num_cols_idx:
+            val = show.iloc[row_i - 1, col_j]
+            if pd.notna(val):
+                styles.append(
+                    ("BACKGROUND", (col_j, row_i), (col_j, row_i), val_to_color(float(val)))
+                )
+
+    table.setStyle(TableStyle(styles))
+    return table
+
+
 
 def make_pdf_report_bytes(
     title: str,
@@ -634,8 +704,9 @@ def make_pdf_km_report_bytes(title, filtros_txt, kpis, fig1_png, fig2_png, tabla
     story.append(Spacer(1, 12))
 
     story.append(Paragraph("<b>4) Top acumulado (matriz)</b>", styles["Heading2"]))
-    story.append(df_to_reportlab_table(top_mat_df, max_rows=30))
+    story.append(df_to_heatmap_pdf_table(top_mat_df, max_rows=30))
     story.append(Spacer(1, 12))
+
 
     story.append(Paragraph("<b>4) Top acumulado + servicios</b>", styles["Heading2"]))
     story.append(df_to_reportlab_table(top_total, max_rows=25))
