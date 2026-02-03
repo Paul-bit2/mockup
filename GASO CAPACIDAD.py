@@ -385,7 +385,7 @@ for row_i in range(1, len(show) + 1):
 
 
     table.setStyle(TableStyle(styles))
-    return table
+return table
 
 
 
