@@ -358,30 +358,51 @@ def val_to_color(v):
         return colors.Color(r / 255, g / 255, b / 255)
 
     # aplica color por celda
+def val_to_color(v, vmin_local, span_local):
+    # normaliza 0-1
+    x = (v - vmin_local) / span_local if span_local else 0.0
+    x = max(0.0, min(1.0, x))
+
+    # verde -> amarillo -> rojo
+    if x < 0.5:
+        r = int(255 * (x * 2))
+        g = 255
+    else:
+        r = 255
+        g = int(255 * (1 - (x - 0.5) * 2))
+    b = 0
+    return colors.Color(r / 255, g / 255, b / 255)
+
+
+# aplica color por celda (MESES)
 for row_i in range(1, len(show) + 1):
     for col_j in num_cols_idx:
         val = show.iloc[row_i - 1, col_j]
         if pd.notna(val):
-            tyles.append(
-                ("BACKGROUND", (col_j, row_i), (col_j, row_i), val_to_color(float(val)))
+            styles.append(
+                ("BACKGROUND", (col_j, row_i), (col_j, row_i), val_to_color(float(val), vmin, span))
             )
-    if tg_idx is not None and tg_vals:
+
+# aplica color por celda (TOTAL GENERAL) con escala propia
+if "Total general" in show.columns:
+    tg_idx = list(show.columns).index("Total general")
+    tg_col = show["Total general"]
+    tg_vals = [float(v) for v in tg_col.dropna().tolist()]
+
+    if tg_vals:
+        tg_vmin = min(tg_vals)
+        tg_vmax = max(tg_vals)
+        tg_span = (tg_vmax - tg_vmin) if tg_vmax != tg_vmin else 1
+
         for row_i in range(1, len(show) + 1):
             val = show.iloc[row_i - 1, tg_idx]
             if pd.notna(val):
-                # normaliza con escala de total general
-                x = (float(val) - tg_vmin) / tg_span if tg_span else 0.0
+                styles.append(
+                    ("BACKGROUND", (tg_idx, row_i), (tg_idx, row_i), val_to_color(float(val), tg_vmin, tg_span))
+                )
 
-                # verde -> amarillo -> rojo (igual que val_to_color)
-                if x < 0.5:
-                    r = int(255 * (x * 2))
-                    g = 255
-                else:
-                    r = 255
-                    g = int(255 * (1 - (x - 0.5) * 2))
-                b = 0
-
-                styles.append(("BACKGROUND", (tg_idx, row_i), (tg_idx, row_i), colors.Color(r/255, g/255, b/255)))
+        # (opcional) resalta texto de total general
+        styles.append(("FONTNAME", (tg_idx, 0), (tg_idx, -1), "Helvetica-Bold"))
 
 
     table.setStyle(TableStyle(styles))
