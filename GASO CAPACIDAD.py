@@ -743,7 +743,7 @@ def make_pdf_km_report_bytes(title, filtros_txt, kpis, fig1_png, fig2_png, tabla
     story.append(Image(io.BytesIO(fig2_png), width=10.5 * inch, height=2.7 * inch))
     story.append(Spacer(1, 12))
 
-    story.append(Paragraph("<b>3) Resumen mensual</b>", styles["Heading2"]))
+    story.append(Paragraph("<b>3) Resumen mensual enero</b>", styles["Heading2"]))
     story.append(df_to_reportlab_table(tabla_mes, max_rows=24))
     story.append(Spacer(1, 12))
 
@@ -752,7 +752,7 @@ def make_pdf_km_report_bytes(title, filtros_txt, kpis, fig1_png, fig2_png, tabla
     story.append(Spacer(1, 12))
 
 
-    story.append(Paragraph("<b>4) Top acumulado + servicios</b>", styles["Heading2"]))
+    story.append(Paragraph("<b>4) Top acumulado + servicios que debería de tener cada auto</b>", styles["Heading2"]))
     story.append(df_to_reportlab_table(top_total, max_rows=25))
     story.append(Spacer(1, 12))
 
@@ -760,7 +760,7 @@ def make_pdf_km_report_bytes(title, filtros_txt, kpis, fig1_png, fig2_png, tabla
     story.append(df_to_reportlab_table(top_mes_df, max_rows=25))
     story.append(Spacer(1, 12))
 
-    story.append(Paragraph("<b>6) GPS a revisar (km=0)</b>", styles["Heading2"]))
+    story.append(Paragraph("<b>6) Vehículos a revisar por falta de lectura en GPS (km=0)</b>", styles["Heading2"]))
     story.append(df_to_reportlab_table(gps_df, max_rows=40))
 
     doc.build(story)
