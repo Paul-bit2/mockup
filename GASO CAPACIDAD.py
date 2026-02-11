@@ -1205,11 +1205,8 @@ else:
         mime="application/pdf"
     )
 with tab_sitio:
-    st.markdown("## Pallets por Sitio (para copiar y pegar en correo)")
-    st.caption(
-        "Regla: 1 fila = 1 pallet. No cuenta si ESTATUS DE SALIDA = SALIDA. "
-        "Encabezado en fila 5 (A5:AC5)."
-    )
+    st.markdown("## Pallets por Sitio (tabla para correo)")
+    st.caption("Regla: 1 fila = 1 pallet. No cuenta si ESTATUS DE SALIDA = SALIDA. Encabezado en fila 5 (A5:AC5).")
 
     # =========================
     # UPLOADER INDEPENDIENTE
@@ -1219,13 +1216,14 @@ with tab_sitio:
         type=["xlsx"],
         key="uploader_sitios_v1",
     )
+
     if not file_sitios:
-        st.info("👆 Sube el Excel para generar el conteo de pallets por sitio.")
+        st.info("👆 Sube un Excel para ver el reporte por Sitio.")
         st.stop()
 
     try:
         xls_s = pd.ExcelFile(file_sitios)
-        sheet_s = st.selectbox("Selecciona hoja", xls_s.sheet_names, index=0, key="sitios_sheet")
+        sheet_s = st.selectbox("Selecciona hoja", xls_s.sheet_names, index=0, key="sheet_sitios_v1")
         df_raw_s = pd.read_excel(xls_s, sheet_name=sheet_s, header=4).dropna(how="all").copy()
     except Exception as e:
         st.error(f"No pude leer el Excel: {e}")
@@ -1236,7 +1234,6 @@ with tab_sitio:
     # =========================
     df_map = normalize_and_map_columns(df_raw_s)
 
-    # Validaciones mínimas
     needed = [COL_CARRIER, COL_XDOCK, COL_ESTATUS, COL_SITE]
     missing = [c for c in needed if c not in df_map.columns]
     if missing:
@@ -1247,13 +1244,15 @@ with tab_sitio:
     # =========================
     # SELECTORES
     # =========================
+    st.markdown("### Filtros")
+
     xdocks = sorted(df_map[COL_XDOCK].astype(str).str.strip().unique())
-    xdock_sel = st.selectbox("Crossdock", options=["TODOS"] + xdocks, index=0, key="sitios_xdock_sel")
+    xdock_sel = st.selectbox("Crossdock", options=["TODOS"] + xdocks, index=0, key="sitios_xdock_sel_v1")
 
     carriers = sorted(df_map[COL_CARRIER].astype(str).str.strip().unique(), key=lambda x: x.upper())
     carrier_options = ["TODOS"] + carriers
 
-    # default: TELCEL/AT&T si existen; si no, TODOS
+    # Default: TELCEL y AT&T si existen; si no, TODOS
     carriers_upper = [c.upper() for c in carriers]
     default_carriers = []
     if "TELCEL" in carriers_upper:
@@ -1267,22 +1266,21 @@ with tab_sitio:
         "Carrier",
         options=carrier_options,
         default=default_carriers,
-        key="sitios_carrier_sel",
+        key="sitios_carrier_sel_v1",
     )
 
     # =========================
-    # ACTIVOS (REGLA SALIDA) + FILTROS
+    # ACTIVOS + FILTROS
     # =========================
-    active = build_active(df_raw_s, carrier_sel)  # aplica SALIDA y carrier (si no TODOS)
+    active = build_active(df_raw_s, carrier_sel)  # aplica SALIDA y filtro carrier (si no TODOS)
 
     if xdock_sel != "TODOS":
         active = active[active[COL_XDOCK].astype(str).str.strip() == xdock_sel].copy()
 
-    # Normaliza nombre sitio
     active[COL_SITE] = active[COL_SITE].astype(str).str.strip()
 
     # =========================
-    # PIVOTE: PALLETS POR SITIO
+    # PIVOTE BASE
     # =========================
     pivot = (
         active.groupby(COL_SITE, dropna=False)
@@ -1292,54 +1290,82 @@ with tab_sitio:
         .reset_index(drop=True)
     )
 
-    st.markdown("### Tabla (en app)")
-    st.dataframe(pivot, use_container_width=True, hide_index=True)
+    # =========================
+    # EXCLUIR FILAS (sitios) PARA EL CORREO
+    # =========================
+    st.markdown("### Ajustes antes de copiar")
+
+    sitios_lista = pivot[COL_SITE].astype(str).tolist()
+    excluir = st.multiselect(
+        "Quitar estos sitios (ej. prueba, dummy, etc.)",
+        options=sitios_lista,
+        default=[],
+        key="sitios_excluir_v1",
+    )
+
+    pivot_out = pivot.copy()
+    if excluir:
+        pivot_out = pivot_out[~pivot_out[COL_SITE].isin(excluir)].copy()
 
     # =========================
-    # HTML PARA CORREO (COPIAR / PEGAR)
+    # AGREGAR FILAS MANUALES
     # =========================
-    st.markdown("### Tabla para correo (copiar y pegar)")
-    title_txt = f"Pallets por Sitio — XDOCK: {xdock_sel} — Carrier: {', '.join(carrier_sel) if carrier_sel else 'TODOS'}"
+    with st.expander("Agregar filas manuales (opcional)", expanded=False):
+        st.caption("Ej: si quieres añadir un sitio que no venga en el archivo o ajustar un valor para el correo.")
+        c1, c2 = st.columns([2, 1])
+        manual_site = c1.text_input("Nombre del sitio", key="sitios_manual_nombre_v1")
+        manual_pallets = c2.number_input("Pallets", min_value=0, step=1, value=0, key="sitios_manual_pallets_v1")
+        add_btn = st.button("Agregar a la tabla final", key="sitios_manual_add_v1")
 
-    # HTML inline (se pega mejor en correo)
-    html_all = df_to_email_html_table(pivot, title=title_txt)
+        if "sitios_manual_rows_v1" not in st.session_state:
+            st.session_state.sitios_manual_rows_v1 = []
 
-    st.markdown(html_all, unsafe_allow_html=True)
-    st.caption("Tip: puedes copiar el HTML (abajo) y pegarlo en correo. En muchos clientes, copiar la tabla renderizada también funciona.")
+        if add_btn:
+            if str(manual_site).strip():
+                st.session_state.sitios_manual_rows_v1.append(
+                    {COL_SITE: str(manual_site).strip(), "Pallets": int(manual_pallets)}
+                )
+            else:
+                st.warning("Escribe un nombre de sitio para agregarlo.")
 
-    st.code(html_all, language="html")
+        if st.session_state.sitios_manual_rows_v1:
+            st.write("Filas manuales agregadas:")
+            st.dataframe(pd.DataFrame(st.session_state.sitios_manual_rows_v1), hide_index=True, use_container_width=True)
 
-    # =========================
-    # OPCIONAL: BOTONES SEPARADOS TELCEL / AT&T
-    # =========================
-    st.markdown("### Tablas separadas por operador (opcional)")
-    c1, c2 = st.columns(2)
+            if st.button("Limpiar filas manuales", key="sitios_manual_clear_v1"):
+                st.session_state.sitios_manual_rows_v1 = []
 
-    def pivot_for_carrier(carrier_name: str) -> pd.DataFrame:
-        tmp = build_active(df_raw_s, [carrier_name])  # activos + ese carrier
-        if xdock_sel != "TODOS":
-            tmp = tmp[tmp[COL_XDOCK].astype(str).str.strip() == xdock_sel].copy()
-        tmp[COL_SITE] = tmp[COL_SITE].astype(str).str.strip()
-        return (
-            tmp.groupby(COL_SITE, dropna=False)
-            .size()
-            .reset_index(name="Pallets")
+    # Aplica manuales al output (sumando si el sitio ya existe)
+    if "sitios_manual_rows_v1" in st.session_state and st.session_state.sitios_manual_rows_v1:
+        manual_df = pd.DataFrame(st.session_state.sitios_manual_rows_v1)
+        pivot_out = pd.concat([pivot_out, manual_df], ignore_index=True)
+        pivot_out = (
+            pivot_out.groupby(COL_SITE, dropna=False)["Pallets"]
+            .sum()
+            .reset_index()
             .sort_values("Pallets", ascending=False)
             .reset_index(drop=True)
         )
 
-    with c1:
-        if st.button("Generar TELCEL", key="sitios_btn_telcel"):
-            piv_tel = pivot_for_carrier("TELCEL")
-            html_tel = df_to_email_html_table(piv_tel, title=f"Pallets por Sitio — TELCEL — XDOCK: {xdock_sel}")
-            st.markdown(html_tel, unsafe_allow_html=True)
-            st.code(html_tel, language="html")
+    # =========================
+    # FILA TOTAL
+    # =========================
+    total = int(pivot_out["Pallets"].sum()) if not pivot_out.empty else 0
+    total_row = pd.DataFrame([{COL_SITE: "TOTAL", "Pallets": total}])
+    pivot_final = pd.concat([pivot_out, total_row], ignore_index=True)
 
-    with c2:
-        if st.button("Generar AT&T", key="sitios_btn_att"):
-            piv_att = pivot_for_carrier("AT&T")
-            html_att = df_to_email_html_table(piv_att, title=f"Pallets por Sitio — AT&T — XDOCK: {xdock_sel}")
-            st.markdown(html_att, unsafe_allow_html=True)
-            st.code(html_att, language="html")
+    # =========================
+    # SALIDA “COPIABLE” PARA CORREO (SIN HTML)
+    # =========================
+    st.markdown("### Tabla final (lista para copiar y pegar en correo)")
+
+    # Vista bonita
+    st.dataframe(pivot_final, use_container_width=True, hide_index=True)
+
+    # Texto tabulado (pega perfecto como tabla en Gmail/Outlook normalmente)
+    tsv = pivot_final.to_csv(sep="\t", index=False)
+
+    st.caption("Copia el bloque de abajo (TSV) y pégalo directo en el correo. Se pega como tabla en la mayoría de clientes.")
+    st.code(tsv, language="text")
 
 
