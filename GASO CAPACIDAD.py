@@ -1195,16 +1195,58 @@ else:
         mime="application/pdf"
     )
 with tab_sitio:
-    st.markdown("## Pallets por Sitio (para correo)")
+    st.markdown("## Pallets por Sitio (tabla para correo)")
     st.caption("Regla: 1 fila = 1 pallet. No cuenta si ESTATUS DE SALIDA = SALIDA. Encabezado en fila 5 (A5:AC5).")
+
+    # =========================
+    # Helper HTML (encabezado negro tipo Excel)
+    # =========================
+    def df_to_email_html_table(df: pd.DataFrame, title: str = "") -> str:
+        df_show = df.copy().fillna("")
+        # Convertimos todo a string para evitar issues de formato
+        for c in df_show.columns:
+            df_show[c] = df_show[c].astype(str)
+
+        header = ""
+        if title:
+            header = f"""
+            <div style="font-family: Arial, sans-serif; font-size: 14px; margin-bottom: 8px;">
+                <b>{title}</b>
+            </div>
+            """
+
+        html = df_show.to_html(index=False, escape=False)
+
+        # Extrae solo el tbody/thead de pandas y lo mete en nuestra tabla sin borde feo
+        core = html.split("<table border=\"1\" class=\"dataframe\">")[1].split("</table>")[0]
+
+        styled = f"""
+        {header}
+        <table style="border-collapse: collapse; font-family: Arial, sans-serif; font-size: 12px;">
+            {core}
+        </table>
+        """
+
+        # Encabezado negro
+        styled = styled.replace(
+            "<th>",
+            "<th style=\"background:#111827;color:#FFFFFF;padding:6px 8px;border:1px solid #D1D5DB;text-align:center;\">",
+        )
+        # Celdas
+        styled = styled.replace(
+            "<td>",
+            "<td style=\"padding:6px 8px;border:1px solid #D1D5DB;text-align:center;\">",
+        )
+
+        return styled
 
     # =========================
     # UPLOADER INDEPENDIENTE
     # =========================
     file_sitios = st.file_uploader(
-        "Sube tu Excel (.xlsx) para este reporte (independiente del tab Crossdock)",
+        "Sube tu Excel (.xlsx) para este reporte (INDEPENDIENTE del tab Crossdock)",
         type=["xlsx"],
-        key="uploader_sitios_v2",
+        key="uploader_sitios_v3",
     )
 
     if not file_sitios:
@@ -1213,14 +1255,14 @@ with tab_sitio:
 
     try:
         xls_s = pd.ExcelFile(file_sitios)
-        sheet_s = st.selectbox("Selecciona hoja", xls_s.sheet_names, index=0, key="sheet_sitios_v2")
+        sheet_s = st.selectbox("Selecciona hoja", xls_s.sheet_names, index=0, key="sheet_sitios_v3")
         df_raw_s = pd.read_excel(xls_s, sheet_name=sheet_s, header=4).dropna(how="all").copy()
     except Exception as e:
         st.error(f"No pude leer el Excel: {e}")
         st.stop()
 
     # =========================
-    # VALIDACIÓN COLUMNAS
+    # VALIDACIÓN
     # =========================
     df_map = normalize_and_map_columns(df_raw_s)
     needed = [COL_CARRIER, COL_XDOCK, COL_ESTATUS, COL_SITE]
@@ -1234,16 +1276,63 @@ with tab_sitio:
     # SELECTOR XDOCK
     # =========================
     xdocks = sorted(df_map[COL_XDOCK].astype(str).str.strip().unique())
-    xdock_sel = st.selectbox("Crossdock", options=["TODOS"] + xdocks, index=0, key="sitios_xdock_sel_v2")
+    xdock_sel = st.selectbox("Crossdock", options=["TODOS"] + xdocks, index=0, key="sitios_xdock_sel_v3")
 
     # =========================
-    # HELPERS
+    # EXCLUIR SITIOS (para quitar pruebas)
+    # =========================
+    # Base con TODOS (build_active no filtra si incluye "TODOS")
+    active_all = build_active(df_raw_s, ["TODOS"])
+    if xdock_sel != "TODOS":
+        active_all = active_all[active_all[COL_XDOCK].astype(str).str.strip() == xdock_sel].copy()
+    active_all[COL_SITE] = active_all[COL_SITE].astype(str).str.strip()
+
+    sitios_lista = (
+        active_all.groupby(COL_SITE).size().reset_index(name="Pallets")
+        .sort_values("Pallets", ascending=False)[COL_SITE]
+        .astype(str).tolist()
+    )
+
+    excluir = st.multiselect(
+        "Quitar estos sitios (pruebas/dummy) antes de generar la tabla",
+        options=sitios_lista,
+        default=[],
+        key="sitios_excluir_v3",
+    )
+
+    # =========================
+    # AGREGAR SITIOS MANUALES
+    # =========================
+    if "sitios_manual_rows_v3" not in st.session_state:
+        st.session_state.sitios_manual_rows_v3 = []
+
+    with st.expander("Agregar sitios manuales (opcional)", expanded=False):
+        c1, c2, c3 = st.columns([2, 1, 1])
+        manual_site = c1.text_input("Nombre del sitio", key="sitios_manual_nombre_v3")
+        manual_pallets = c2.number_input("Pallets", min_value=0, step=1, value=0, key="sitios_manual_pallets_v3")
+        add_btn = c3.button("Agregar", key="sitios_manual_add_v3")
+
+        if add_btn:
+            if str(manual_site).strip():
+                st.session_state.sitios_manual_rows_v3.append(
+                    {COL_SITE: str(manual_site).strip(), "Pallets": int(manual_pallets)}
+                )
+            else:
+                st.warning("Escribe un nombre de sitio para agregarlo.")
+
+        if st.session_state.sitios_manual_rows_v3:
+            st.markdown("**Filas manuales agregadas:**")
+            st.dataframe(pd.DataFrame(st.session_state.sitios_manual_rows_v3), hide_index=True, use_container_width=True)
+
+            if st.button("Limpiar manuales", key="sitios_manual_clear_v3"):
+                st.session_state.sitios_manual_rows_v3 = []
+
+    # =========================
+    # HELPERS DE CÁLCULO
     # =========================
     def pivot_pallets_por_sitio(df_raw: pd.DataFrame, carrier_filter: list[str]) -> pd.DataFrame:
-        # activos (aplica regla SALIDA y carrier)
         active = build_active(df_raw, carrier_filter)
 
-        # filtra xdock
         if xdock_sel != "TODOS":
             active = active[active[COL_XDOCK].astype(str).str.strip() == xdock_sel].copy()
 
@@ -1256,81 +1345,56 @@ with tab_sitio:
             .sort_values("Pallets", ascending=False)
             .reset_index(drop=True)
         )
-        return piv
 
-    def with_total_row(df: pd.DataFrame) -> pd.DataFrame:
-        total = int(df["Pallets"].sum()) if not df.empty else 0
-        return pd.concat([df, pd.DataFrame([{COL_SITE: "TOTAL", "Pallets": total}])], ignore_index=True)
-
-    def df_to_markdown_table(df: pd.DataFrame) -> str:
-    # Markdown puro sin tabulate
-    cols = [str(c) for c in df.columns]
-    rows = df.astype(str).values.tolist()
-
-    header = "| " + " | ".join(cols) + " |"
-    sep = "| " + " | ".join(["---"] * len(cols)) + " |"
-    body = "\n".join("| " + " | ".join(r) + " |" for r in rows)
-
-    return "\n".join([header, sep, body])
-
-
-    # =========================
-    # EXCLUIR SITIOS (para quitar "prueba")
-    # =========================
-    st.markdown("### Quitar sitios (opcional)")
-    base_all = pivot_pallets_por_sitio(df_raw_s, ["TODOS"])  # ojo: build_active ignora "TODOS"
-    # si tu build_active filtra cuando ve "TODOS", entonces usa carriers reales:
-    # pero en tu build_active: si "TODOS" está en carriers_filter, NO filtra.
-    sitios_lista = base_all[COL_SITE].astype(str).tolist()
-    excluir = st.multiselect(
-        "Selecciona sitios que NO quieres incluir en el correo",
-        options=sitios_lista,
-        default=[],
-        key="sitios_excluir_v2",
-    )
-
-    def apply_excluir(df: pd.DataFrame) -> pd.DataFrame:
+        # excluir sitios
         if excluir:
-            return df[~df[COL_SITE].isin(excluir)].copy()
-        return df
+            piv = piv[~piv[COL_SITE].isin(excluir)].copy()
+
+        # aplicar manuales (sumar si el sitio ya existe)
+        if st.session_state.sitios_manual_rows_v3:
+            manual_df = pd.DataFrame(st.session_state.sitios_manual_rows_v3)
+            piv = pd.concat([piv, manual_df], ignore_index=True)
+            piv = (
+                piv.groupby(COL_SITE, dropna=False)["Pallets"]
+                .sum()
+                .reset_index()
+                .sort_values("Pallets", ascending=False)
+                .reset_index(drop=True)
+            )
+
+        # fila TOTAL
+        total = int(piv["Pallets"].sum()) if not piv.empty else 0
+        piv = pd.concat([piv, pd.DataFrame([{COL_SITE: "TOTAL", "Pallets": total}])], ignore_index=True)
+
+        return piv
 
     # =========================
     # BOTONES (como te gustaba)
     # =========================
-    st.markdown("### Generar tablas")
+    st.markdown("### Generar tabla para correo")
     b1, b2, b3 = st.columns(3)
 
-    def render_block(title: str, df_table: pd.DataFrame):
-        df_table = apply_excluir(df_table)
-        df_table = with_total_row(df_table)
-
+    def render_table_block(title: str, df_table: pd.DataFrame):
+        # Preview en app
         st.markdown(f"#### {title}")
         st.dataframe(df_table, use_container_width=True, hide_index=True)
 
+        # Tabla bonita para copiar/pegar (SIN mostrar HTML crudo)
         html = df_to_email_html_table(df_table, title=title)
-
-        st.caption("Copia y pega esta tabla en tu correo (se pega con formato tipo Excel).")
+        st.caption("Copia y pega esta tabla en tu correo (se pega con estilo tipo Excel).")
         st.markdown(html, unsafe_allow_html=True)
 
-
-    # AMBOS (según archivo)
     with b1:
-        if st.button("📋 Generar AMBOS (según filtros del archivo)", key="btn_sitios_ambos_v2"):
-            # Usa todos los carriers del archivo (sin filtrar por carrier)
-            # build_active: si carriers_filter incluye "TODOS" => no filtra
-            piv = pivot_pallets_por_sitio(df_raw_s, ["TODOS"])
-            render_block(f"Pallets por Sitio — TODOS — XDOCK: {xdock_sel}", piv)
+        if st.button("📋 AMBOS", key="btn_sitios_ambos_v3"):
+            piv = pivot_pallets_por_sitio(df_raw_s, ["TODOS"])  # no filtra carriers
+            render_table_block(f"Pallets por Sitio — TODOS — XDOCK: {xdock_sel}", piv)
 
-    # TELCEL
     with b2:
-        if st.button("📋 Generar TELCEL", key="btn_sitios_telcel_v2"):
+        if st.button("📋 TELCEL", key="btn_sitios_telcel_v3"):
             piv = pivot_pallets_por_sitio(df_raw_s, ["TELCEL"])
-            render_block(f"Pallets por Sitio — TELCEL — XDOCK: {xdock_sel}", piv)
+            render_table_block(f"Pallets por Sitio — TELCEL — XDOCK: {xdock_sel}", piv)
 
-    # AT&T
     with b3:
-        if st.button("📋 Generar AT&T", key="btn_sitios_att_v2"):
+        if st.button("📋 AT&T", key="btn_sitios_att_v3"):
             piv = pivot_pallets_por_sitio(df_raw_s, ["AT&T"])
-            render_block(f"Pallets por Sitio — AT&T — XDOCK: {xdock_sel}", piv)
-
-
+            render_table_block(f"Pallets por Sitio — AT&T — XDOCK: {xdock_sel}", piv)
