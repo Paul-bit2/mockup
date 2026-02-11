@@ -944,7 +944,7 @@ with tab_crossdock:
     st.caption("Regla: 1 fila = 1 pallet. No cuenta si ESTATUS DE SALIDA = SALIDA. Encabezado en fila 5 (A5:AC5).")
 
     file_sitios = st.file_uploader("Sube tu Excel (.xlsx) para Pallets por Sitio", type=["xlsx"], key="sitios_excel")
-if not file:
+if not file_sitios:
     st.info("👆 Sube un Excel para ver el reporte de Crossdock.")
 else:
 
