@@ -1069,7 +1069,7 @@ with tab_km:
     km_file = st.file_uploader("Sube tu Excel (.xlsx)", type=["xlsx"], key="crossdock_uploader")
     if not file:
         st.info("👆 Sube un Excel para ver el reporte de Crossdock.")
-    else:
+        else:
 
     try:
         xls = pd.ExcelFile(km_file)
