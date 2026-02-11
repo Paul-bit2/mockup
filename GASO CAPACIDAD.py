@@ -1217,7 +1217,7 @@ with tab_sitio:
     file_sitios = st.file_uploader(
         "Sube tu Excel (.xlsx) para este reporte (independiente del tab Crossdock)",
         type=["xlsx"],
-        key="sitios_excel",
+        key="uploader_sitios_v1",
     )
     if not file_sitios:
         st.info("👆 Sube el Excel para generar el conteo de pallets por sitio.")
