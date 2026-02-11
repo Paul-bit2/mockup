@@ -943,7 +943,7 @@ with tab_crossdock:
     st.markdown("## GASO Comunicaciones — Reporte Ejecutivo de Ocupación de Crossdock")
     st.caption("Regla: 1 fila = 1 pallet. No cuenta si ESTATUS DE SALIDA = SALIDA. Encabezado en fila 5 (A5:AC5).")
 
-    file = st.file_uploader("Sube tu Excel (.xlsx)", type=["xlsx"], key="crossdock_uploader")
+    file_sitios = st.file_uploader("Sube tu Excel (.xlsx) para Pallets por Sitio", type=["xlsx"], key="sitios_excel")
 if not file:
     st.info("👆 Sube un Excel para ver el reporte de Crossdock.")
 else:
@@ -1066,8 +1066,8 @@ with tab_km:
     st.markdown("## GASO Comunicaciones — Reporte Ejecutivo de Kilometraje")
     st.caption("Formato: Item | Mes | Nombre del equipo | Kilometraje (A1 encabezado, datos desde A2).")
 
-    km_file = st.file_uploader("Sube tu Excel (.xlsx)", type=["xlsx"], key="crossdock_uploader")
-if not km_file:
+    km_file = st.file_uploader("Sube tu Excel de kilometraje (.xlsx)", type=["xlsx"], key="km_uploader")
+if not file:
     st.info("👆 Sube un Excel para ver el reporte de Crossdock.")
 else:
 
