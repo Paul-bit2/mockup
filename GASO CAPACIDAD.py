@@ -1205,39 +1205,34 @@ with tab_km:
     )
 with tab_sitio:
     st.markdown("## Pallets por Sitio (para copiar y pegar en correo)")
-    st.caption("Regla: 1 fila = 1 pallet. No cuenta si ESTATUS DE SALIDA = SALIDA. Se usa la columna NOMBRE DE SITIO.")
+    st.caption(
+        "Regla: 1 fila = 1 pallet. No cuenta si ESTATUS DE SALIDA = SALIDA. "
+        "Encabezado en fila 5 (A5:AC5)."
+    )
 
-    # Reutilizamos el MISMO uploader del crossdock (si ya subiste el Excel ahí)
-    # Si tu variable se llama diferente, ajusta 'file' y 'df_raw' según tu código.
-    # Si no existe 'df_raw' porque no subiste nada en Crossdock, pedimos subir aquí también.
-    if "df_raw_crossdock_cache" not in st.session_state:
-        st.session_state.df_raw_crossdock_cache = None
-
-    # Si ya existe df_raw (del tab crossdock), lo cacheamos (sin modificar tu lógica anterior)
-    try:
-        _ = df_raw  # si existe en el scope
-        st.session_state.df_raw_crossdock_cache = df_raw.copy()
-    except Exception:
-        pass
-
-    file_local = None
-    if st.session_state.df_raw_crossdock_cache is None:
-        file_local = st.file_uploader("Sube tu Excel de Crossdock (.xlsx)", type=["xlsx"], key="sitio_uploader")
-        if not file_local:
-            st.info("👆 Sube el Excel para generar la tabla por sitio.")
-        else:
-            try:
-                xls = pd.ExcelFile(file_local)
-                sheet = st.selectbox("Selecciona hoja", xls.sheet_names, index=0, key="sitio_sheet")
-                st.session_state.df_raw_crossdock_cache = pd.read_excel(xls, sheet_name=sheet, header=4).dropna(how="all").copy()
-            except Exception as e:
-                st.error(f"No pude leer el Excel: {e}")
-                st.stop()
-
-    if st.session_state.df_raw_crossdock_cache is None:
+    # =========================
+    # UPLOADER INDEPENDIENTE
+    # =========================
+    file_sitios = st.file_uploader(
+        "Sube tu Excel (.xlsx) para este reporte (independiente del tab Crossdock)",
+        type=["xlsx"],
+        key="sitios_excel",
+    )
+    if not file_sitios:
+        st.info("👆 Sube el Excel para generar el conteo de pallets por sitio.")
         st.stop()
 
-    df_raw_s = st.session_state.df_raw_crossdock_cache.copy()
+    try:
+        xls_s = pd.ExcelFile(file_sitios)
+        sheet_s = st.selectbox("Selecciona hoja", xls_s.sheet_names, index=0, key="sitios_sheet")
+        df_raw_s = pd.read_excel(xls_s, sheet_name=sheet_s, header=4).dropna(how="all").copy()
+    except Exception as e:
+        st.error(f"No pude leer el Excel: {e}")
+        st.stop()
+
+    # =========================
+    # MAPEOS / VALIDACIÓN
+    # =========================
     df_map = normalize_and_map_columns(df_raw_s)
 
     # Validaciones mínimas
@@ -1248,80 +1243,102 @@ with tab_sitio:
         st.write("Columnas detectadas:", list(df_map.columns))
         st.stop()
 
-    # Selectores
+    # =========================
+    # SELECTORES
+    # =========================
     xdocks = sorted(df_map[COL_XDOCK].astype(str).str.strip().unique())
-    xdock_sel = st.selectbox("Crossdock", options=["TODOS"] + xdocks, index=0, key="sitio_xdock")
+    xdock_sel = st.selectbox("Crossdock", options=["TODOS"] + xdocks, index=0, key="sitios_xdock_sel")
 
     carriers = sorted(df_map[COL_CARRIER].astype(str).str.strip().unique(), key=lambda x: x.upper())
+    carrier_options = ["TODOS"] + carriers
+
+    # default: TELCEL/AT&T si existen; si no, TODOS
+    carriers_upper = [c.upper() for c in carriers]
+    default_carriers = []
+    if "TELCEL" in carriers_upper:
+        default_carriers.append(carriers[carriers_upper.index("TELCEL")])
+    if "AT&T" in carriers_upper:
+        default_carriers.append(carriers[carriers_upper.index("AT&T")])
+    if not default_carriers:
+        default_carriers = ["TODOS"]
+
     carrier_sel = st.multiselect(
         "Carrier",
-        options=["TODOS"] + carriers,
-        default=["TELCEL", "AT&T"] if ("TELCEL" in [c.upper() for c in carriers] or "AT&T" in [c.upper() for c in carriers]) else ["TODOS"],
-        key="sitio_carrier"
+        options=carrier_options,
+        default=default_carriers,
+        key="sitios_carrier_sel",
     )
 
-    # Activos (aplica regla SALIDA y 1 fila=1 pallet)
-    active = build_active(df_raw_s, carrier_sel)
+    # =========================
+    # ACTIVOS (REGLA SALIDA) + FILTROS
+    # =========================
+    active = build_active(df_raw_s, carrier_sel)  # aplica SALIDA y carrier (si no TODOS)
 
-    # Filtro XDOCK
     if xdock_sel != "TODOS":
         active = active[active[COL_XDOCK].astype(str).str.strip() == xdock_sel].copy()
 
-    # Normaliza nombre sitio (por si hay espacios)
+    # Normaliza nombre sitio
     active[COL_SITE] = active[COL_SITE].astype(str).str.strip()
 
-    # Tabla pivote: Pallets por Sitio (según filtros)
+    # =========================
+    # PIVOTE: PALLETS POR SITIO
+    # =========================
     pivot = (
-        active.groupby([COL_SITE], dropna=False)
+        active.groupby(COL_SITE, dropna=False)
         .size()
         .reset_index(name="Pallets")
         .sort_values("Pallets", ascending=False)
         .reset_index(drop=True)
     )
 
-    st.markdown("### Vista (en app)")
+    st.markdown("### Tabla (en app)")
     st.dataframe(pivot, use_container_width=True, hide_index=True)
 
-    # Tabla HTML para correo (pegable)
+    # =========================
+    # HTML PARA CORREO (COPIAR / PEGAR)
+    # =========================
     st.markdown("### Tabla para correo (copiar y pegar)")
     title_txt = f"Pallets por Sitio — XDOCK: {xdock_sel} — Carrier: {', '.join(carrier_sel) if carrier_sel else 'TODOS'}"
+
+    # HTML inline (se pega mejor en correo)
     html_all = df_to_email_html_table(pivot, title=title_txt)
 
-    # Preview
     st.markdown(html_all, unsafe_allow_html=True)
+    st.caption("Tip: puedes copiar el HTML (abajo) y pegarlo en correo. En muchos clientes, copiar la tabla renderizada también funciona.")
 
-    # Para copiar fácil: Streamlit pone botón de “copy” en st.code
-    st.caption("Copia el HTML con el botón de copiar y pégalo en el correo (en modo HTML o pegado normal suele conservar tabla).")
     st.code(html_all, language="html")
 
-    # Extra: botones por operador (TELCEL / AT&T), separados
+    # =========================
+    # OPCIONAL: BOTONES SEPARADOS TELCEL / AT&T
+    # =========================
     st.markdown("### Tablas separadas por operador (opcional)")
-    col1, col2 = st.columns(2)
+    c1, c2 = st.columns(2)
 
-    def build_pivot_for_carrier(carrier_name: str) -> pd.DataFrame:
-        tmp = build_active(df_raw_s, [carrier_name])
+    def pivot_for_carrier(carrier_name: str) -> pd.DataFrame:
+        tmp = build_active(df_raw_s, [carrier_name])  # activos + ese carrier
         if xdock_sel != "TODOS":
             tmp = tmp[tmp[COL_XDOCK].astype(str).str.strip() == xdock_sel].copy()
         tmp[COL_SITE] = tmp[COL_SITE].astype(str).str.strip()
         return (
-            tmp.groupby([COL_SITE], dropna=False)
+            tmp.groupby(COL_SITE, dropna=False)
             .size()
             .reset_index(name="Pallets")
             .sort_values("Pallets", ascending=False)
             .reset_index(drop=True)
         )
 
-    with col1:
-        if st.button("Generar tabla TELCEL", key="btn_telcel_site"):
-            piv_tel = build_pivot_for_carrier("TELCEL")
+    with c1:
+        if st.button("Generar TELCEL", key="sitios_btn_telcel"):
+            piv_tel = pivot_for_carrier("TELCEL")
             html_tel = df_to_email_html_table(piv_tel, title=f"Pallets por Sitio — TELCEL — XDOCK: {xdock_sel}")
             st.markdown(html_tel, unsafe_allow_html=True)
             st.code(html_tel, language="html")
 
-    with col2:
-        if st.button("Generar tabla AT&T", key="btn_att_site"):
-            piv_att = build_pivot_for_carrier("AT&T")
+    with c2:
+        if st.button("Generar AT&T", key="sitios_btn_att"):
+            piv_att = pivot_for_carrier("AT&T")
             html_att = df_to_email_html_table(piv_att, title=f"Pallets por Sitio — AT&T — XDOCK: {xdock_sel}")
             st.markdown(html_att, unsafe_allow_html=True)
             st.code(html_att, language="html")
+
 
