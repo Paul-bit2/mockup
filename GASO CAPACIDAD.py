@@ -252,15 +252,7 @@ def fig_to_png_bytes(fig) -> bytes:
     buf.seek(0)
     return buf.getvalue()
 def df_to_email_html_table(df: pd.DataFrame, title: str = "") -> str:
-    """
-    Regresa HTML con estilos inline para copiar/pegar en correo (Gmail/Outlook).
-    """
-    df_show = df.copy()
-
-    # Convertimos NaN a vacío
-    df_show = df_show.fillna("")
-
-    # Construye tabla HTML
+    df_show = df.copy().fillna("")
     header = ""
     if title:
         header = f"""
@@ -268,8 +260,6 @@ def df_to_email_html_table(df: pd.DataFrame, title: str = "") -> str:
             <b>{title}</b>
         </div>
         """
-
-    # Estilo tipo “tabla dinámica copiada”
     html = df_show.to_html(index=False, escape=False)
 
     styled = f"""
@@ -279,11 +269,11 @@ def df_to_email_html_table(df: pd.DataFrame, title: str = "") -> str:
     </table>
     """
 
-    # Aplica estilos a th/td (inline, para que pegue bien)
-    styled = styled.replace("<th>", "<th style=\"background:#1F2937;color:#FFFFFF;padding:6px 8px;border:1px solid #D1D5DB;text-align:center;\">")
+    styled = styled.replace("<th>", "<th style=\"background:#111827;color:#FFFFFF;padding:6px 8px;border:1px solid #D1D5DB;text-align:center;\">")
     styled = styled.replace("<td>", "<td style=\"padding:6px 8px;border:1px solid #D1D5DB;text-align:center;\">")
 
     return styled
+
 
 
 def df_to_reportlab_table(df: pd.DataFrame, max_rows=30):
@@ -1273,8 +1263,16 @@ with tab_sitio:
         return pd.concat([df, pd.DataFrame([{COL_SITE: "TOTAL", "Pallets": total}])], ignore_index=True)
 
     def df_to_markdown_table(df: pd.DataFrame) -> str:
-        # tabla markdown lista para copiar/pegar en correo
-        return df.to_markdown(index=False)
+    # Markdown puro sin tabulate
+    cols = [str(c) for c in df.columns]
+    rows = df.astype(str).values.tolist()
+
+    header = "| " + " | ".join(cols) + " |"
+    sep = "| " + " | ".join(["---"] * len(cols)) + " |"
+    body = "\n".join("| " + " | ".join(r) + " |" for r in rows)
+
+    return "\n".join([header, sep, body])
+
 
     # =========================
     # EXCLUIR SITIOS (para quitar "prueba")
@@ -1309,9 +1307,11 @@ with tab_sitio:
         st.markdown(f"#### {title}")
         st.dataframe(df_table, use_container_width=True, hide_index=True)
 
-        md = df_to_markdown_table(df_table)
-        st.caption("Copia/pega esta tabla en el correo:")
-        st.code(md, language="markdown")
+        html = df_to_email_html_table(df_table, title=title)
+
+        st.caption("Copia y pega esta tabla en tu correo (se pega con formato tipo Excel).")
+        st.markdown(html, unsafe_allow_html=True)
+
 
     # AMBOS (según archivo)
     with b1:
