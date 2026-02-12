@@ -364,6 +364,45 @@ def df_to_heatmap_pdf_table(df: pd.DataFrame, max_rows=30, exclude_cols=None):
 
     table.setStyle(TableStyle(styles))
     return table
+def df_to_reportlab_table(df: pd.DataFrame, max_rows=30):
+    """
+    Convierte df a Table (ReportLab) con estilo ejecutivo.
+    Limita filas para que no se haga infinito.
+    """
+    show = df.copy()
+
+    # Redondeo general (2 decimales si es numérico)
+    for c in show.columns:
+        if pd.api.types.is_numeric_dtype(show[c]):
+            show[c] = pd.to_numeric(show[c], errors="coerce").round(2)
+
+    if len(show) > max_rows:
+        show = show.head(max_rows).copy()
+
+    data = [list(show.columns)] + show.values.tolist()
+
+    t = Table(data, repeatRows=1)
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111827")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, 0), 9),
+
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
+                ("FONTSIZE", (0, 1), (-1, -1), 8),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F7F7F7")]),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]
+        )
+    )
+    return t
+
 
 
 def make_pdf_report_bytes(
