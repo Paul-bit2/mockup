@@ -1374,8 +1374,17 @@ with tab_sitio:
     # =========================
     # BOTONES (como te gustaba)
     # =========================
-    st.markdown("### Generar tabla (copiar y pegar al correo)")
-    b1, b2, b3 = st.columns(3)
+st.markdown("### Generar tabla (copiar y pegar al correo)")
+b1, b2, b3 = st.columns(3)
+
+def render(title: str, df_table: pd.DataFrame):
+    st.markdown("### Copiar para correo (incluye encabezado)")
+    html = df_to_email_html_table(df_table, title=title)
+    st.markdown(html, unsafe_allow_html=True)
+
+    st.markdown("### Vista rápida (NO copiar de aquí)")
+    st.dataframe(df_table, use_container_width=True, hide_index=True)
+
 with b1:
     if st.button("📋 AMBOS", key="btn_sitios_ambos_final_v1"):
         piv = build_pivot(["TODOS"])
@@ -1390,16 +1399,3 @@ with b3:
     if st.button("📋 AT&T", key="btn_sitios_att_final_v1"):
         piv = build_pivot(["AT&T"])
         render(f"Pallets por Sitio — AT&T — XDOCK: {xdock_sel}", piv)
-
-
-def render(title: str, df_table: pd.DataFrame):
-    """
-    Muestra primero la tabla HTML (copiable con encabezado) y luego la vista rápida.
-    IMPORTANTE: Copia desde la primera tabla (HTML), no desde st.dataframe.
-    """
-    st.markdown("### Copiar para correo (incluye encabezado)")
-    html = df_to_email_html_table(df_table, title=title)
-    st.markdown(html, unsafe_allow_html=True)
-
-    st.markdown("### Vista rápida (NO copiar de aquí)")
-    st.dataframe(df_table, use_container_width=True, hide_index=True)
