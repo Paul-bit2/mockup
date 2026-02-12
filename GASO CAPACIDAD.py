@@ -884,118 +884,122 @@ with tab_crossdock:
     st.caption("Regla: 1 fila = 1 pallet. No cuenta si ESTATUS DE SALIDA = SALIDA. Encabezado en fila 5 (A5:AC5).")
 
     file_crossdock = st.file_uploader("Sube tu Excel de Crossdock (.xlsx)", type=["xlsx"], key="crossdock_excel")
+
     if not file_crossdock:
         st.info("👆 Sube un Excel para ver el reporte de Crossdock.")
-        st.stop()
+    else:
+        try:
+            xls = pd.ExcelFile(file_crossdock)
+            sheet = st.selectbox("Selecciona hoja", xls.sheet_names, index=0, key="crossdock_sheet")
+            df_raw = pd.read_excel(xls, sheet_name=sheet, header=4).dropna(how="all").copy()
+        except Exception as e:
+            st.error(f"No pude leer el Excel: {e}")
+            df_raw = None
 
-    try:
-        xls = pd.ExcelFile(file_crossdock)
-        sheet = st.selectbox("Selecciona hoja", xls.sheet_names, index=0, key="crossdock_sheet")
-        df_raw = pd.read_excel(xls, sheet_name=sheet, header=4).dropna(how="all").copy()
-    except Exception as e:
-        st.error(f"No pude leer el Excel: {e}")
-        st.stop()
+        if df_raw is not None:
+            df_mapped = normalize_and_map_columns(df_raw)
+            missing = ensure_required_columns(df_mapped)
+            if missing:
+                st.error(f"Faltan columnas requeridas: {missing}")
+                st.write("Columnas detectadas:", list(df_mapped.columns))
+            else:
+                st.sidebar.header("Crossdock — Filtros")
+                carriers_detectados = sorted(df_mapped[COL_CARRIER].astype(str).str.strip().unique(), key=lambda x: x.upper())
+                carrier_opts = ["TODOS"] + carriers_detectados
+                default = [c for c in DEFAULT_TARGET_CARRIERS if c in carriers_detectados] or ["TODOS"]
+                carriers_filter = st.sidebar.multiselect(
+                    "Carrier (Crossdock)",
+                    options=carrier_opts,
+                    default=default,
+                    key="crossdock_carrier"
+                )
 
-    df_mapped = normalize_and_map_columns(df_raw)
-    missing = ensure_required_columns(df_mapped)
-    if missing:
-        st.error(f"Faltan columnas requeridas: {missing}")
-        st.write("Columnas detectadas:", list(df_mapped.columns))
-        st.stop()
+                st.sidebar.header("Crossdock — Capacidades (m²)")
+                xdocks = sorted(df_mapped[COL_XDOCK].astype(str).str.strip().unique())
 
-    st.sidebar.header("Crossdock — Filtros")
-    carriers_detectados = sorted(df_mapped[COL_CARRIER].astype(str).str.strip().unique(), key=lambda x: x.upper())
-    carrier_opts = ["TODOS"] + carriers_detectados
-    default = [c for c in DEFAULT_TARGET_CARRIERS if c in carriers_detectados] or ["TODOS"]
-    carriers_filter = st.sidebar.multiselect("Carrier (Crossdock)", options=carrier_opts, default=default, key="crossdock_carrier")
+                if "capacity_map" not in st.session_state:
+                    st.session_state.capacity_map = {}
+                for x in xdocks:
+                    if x not in st.session_state.capacity_map:
+                        st.session_state.capacity_map[x] = float(PRESET_XDOCK_CAPACITY_M2.get(x, 0.0))
 
-    st.sidebar.header("Crossdock — Capacidades (m²)")
-    xdocks = sorted(df_mapped[COL_XDOCK].astype(str).str.strip().unique())
+                with st.sidebar.expander("Editar capacidades por Crossdock", expanded=False):
+                    for x in xdocks:
+                        st.session_state.capacity_map[x] = st.number_input(
+                            label=f"{x}",
+                            min_value=0.0,
+                            step=10.0,
+                            value=float(st.session_state.capacity_map.get(x, 0.0)),
+                            key=f"cap_{x}",
+                        )
 
-    if "capacity_map" not in st.session_state:
-        st.session_state.capacity_map = {}
+                capacity_map = dict(st.session_state.capacity_map)
 
-    for x in xdocks:
-        if x not in st.session_state.capacity_map:
-            st.session_state.capacity_map[x] = float(PRESET_XDOCK_CAPACITY_M2.get(x, 0.0))
+                try:
+                    active = build_active(df_raw, carriers_filter)
+                except Exception as e:
+                    st.error(f"Error procesando: {e}")
+                    active = None
 
-    with st.sidebar.expander("Editar capacidades por Crossdock", expanded=False):
-        for x in xdocks:
-            st.session_state.capacity_map[x] = st.number_input(
-                label=f"{x}",
-                min_value=0.0,
-                step=10.0,
-                value=float(st.session_state.capacity_map.get(x, 0.0)),
-                key=f"cap_{x}",
-            )
+                if active is not None:
+                    by_xdock, cxt, pivot_xdock_tipo, pendientes_df = summarize(active, capacity_map)
 
-    capacity_map = dict(st.session_state.capacity_map)
+                    st.markdown("### Matriz de Pallets por Crossdock y Tipo (activos)")
+                    st.dataframe(pivot_xdock_tipo, use_container_width=True, hide_index=True)
 
-    try:
-        active = build_active(df_raw, carriers_filter)
-    except Exception as e:
-        st.error(f"Error procesando: {e}")
-        st.stop()
+                    if not pendientes_df.empty:
+                        st.warning("Pendientes detectados (pueden afectar m² o %):")
+                        st.dataframe(pendientes_df, use_container_width=True, hide_index=True)
 
-    by_xdock, cxt, pivot_xdock_tipo, pendientes_df = summarize(active, capacity_map)
+                    st.markdown("### Ocupación por Crossdock (m² y %)")
+                    st.pyplot(fig_occupancy_barh(by_xdock), use_container_width=True)
 
-    st.markdown("### Matriz de Pallets por Crossdock y Tipo (activos)")
-    st.dataframe(pivot_xdock_tipo, use_container_width=True, hide_index=True)
+                    st.markdown("### Pallets por Tipo (según filtros)")
+                    st.pyplot(fig_pallets_by_type(active), use_container_width=True)
 
-    if not pendientes_df.empty:
-        st.warning("Pendientes detectados (pueden afectar m² o %):")
-        st.dataframe(pendientes_df, use_container_width=True, hide_index=True)
+                    total_pallets = int(active["PALLETS_FILA"].sum())
+                    total_m2 = float(active["M2_OCUPADOS_FILA"].sum(skipna=True))
 
-    st.markdown("### Ocupación por Crossdock (m² y %)")
-    st.pyplot(fig_occupancy_barh(by_xdock), use_container_width=True)
+                    cap_sum = by_xdock["capacidad_m2"].sum(skipna=True)
+                    occ_sum = by_xdock["m2_ocupados"].sum(skipna=True)
+                    pct_global = (occ_sum / cap_sum * 100.0) if cap_sum and cap_sum > 0 else float("nan")
 
-    st.markdown("### Pallets por Tipo (según filtros)")
-    st.pyplot(fig_pallets_by_type(active), use_container_width=True)
+                    k1, k2, k3 = st.columns(3)
+                    k1.metric("Pallets activas", f"{total_pallets}")
+                    k2.metric("m² ocupados", f"{total_m2:,.2f}")
+                    k3.metric("% ocupación global", f"{pct_global:,.2f}%" if pd.notna(pct_global) else "N/A")
 
-    total_pallets = int(active["PALLETS_FILA"].sum())
-    total_m2 = float(active["M2_OCUPADOS_FILA"].sum(skipna=True))
+                    st.markdown("### Reporte Ejecutivo (PDF)")
+                    filters_text = f"Filtros aplicados — Carrier: {', '.join(carriers_filter) if carriers_filter else 'TODOS'}"
+                    title_pdf = "GASO Comunicaciones — Reporte Ejecutivo de Ocupación de Crossdock"
+                    now_txt = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    cap_sum = by_xdock["capacidad_m2"].sum(skipna=True)
-    occ_sum = by_xdock["m2_ocupados"].sum(skipna=True)
-    pct_global = (occ_sum / cap_sum * 100.0) if cap_sum and cap_sum > 0 else float("nan")
+                    kpi_dict = {
+                        "pallets": f"{total_pallets}",
+                        "m2": f"{total_m2:,.2f}",
+                        "pct": f"{pct_global:,.2f}%" if pd.notna(pct_global) else "N/A",
+                        "fecha": now_txt,
+                    }
 
-    k1, k2, k3 = st.columns(3)
-    k1.metric("Pallets activas", f"{total_pallets}")
-    k2.metric("m² ocupados", f"{total_m2:,.2f}")
-    k3.metric("% ocupación global", f"{pct_global:,.2f}%" if pd.notna(pct_global) else "N/A")
+                    occ_png = fig_to_png_bytes(fig_occupancy_barh(by_xdock))
+                    type_png = fig_to_png_bytes(fig_pallets_by_type(active))
 
-    st.markdown("### Reporte Ejecutivo (PDF)")
-    filters_text = f"Filtros aplicados — Carrier: {', '.join(carriers_filter) if carriers_filter else 'TODOS'}"
-    title_pdf = "GASO Comunicaciones — Reporte Ejecutivo de Ocupación de Crossdock"
-    now_txt = datetime.now().strftime("%Y-%m-%d %H:%M")
+                    pdf_bytes = make_pdf_report_bytes(
+                        title=title_pdf,
+                        filters_text=filters_text,
+                        kpi_dict=kpi_dict,
+                        occupancy_png=occ_png,
+                        type_png=type_png,
+                        by_xdock=by_xdock,
+                        carrier_xdock_type=cxt,
+                    )
 
-    kpi_dict = {
-        "pallets": f"{total_pallets}",
-        "m2": f"{total_m2:,.2f}",
-        "pct": f"{pct_global:,.2f}%" if pd.notna(pct_global) else "N/A",
-        "fecha": now_txt,
-    }
-
-    occ_png = fig_to_png_bytes(fig_occupancy_barh(by_xdock))
-    type_png = fig_to_png_bytes(fig_pallets_by_type(active))
-
-    pdf_bytes = make_pdf_report_bytes(
-        title=title_pdf,
-        filters_text=filters_text,
-        kpi_dict=kpi_dict,
-        occupancy_png=occ_png,
-        type_png=type_png,
-        by_xdock=by_xdock,
-        carrier_xdock_type=cxt,
-    )
-
-    st.download_button(
-        "⬇️ Descargar PDF Ejecutivo (Crossdock)",
-        data=pdf_bytes,
-        file_name="GASO_reporte_ejecutivo_crossdock.pdf",
-        mime="application/pdf",
-    )
-
+                    st.download_button(
+                        "⬇️ Descargar PDF Ejecutivo (Crossdock)",
+                        data=pdf_bytes,
+                        file_name="GASO_reporte_ejecutivo_crossdock.pdf",
+                        mime="application/pdf",
+                    )
 
 # -------------------------
 # TAB KILOMETRAJE
@@ -1005,130 +1009,133 @@ with tab_km:
     st.caption("Formato: Item | Mes | Nombre del equipo | Kilometraje (A1 encabezado, datos desde A2).")
 
     km_file = st.file_uploader("Sube tu Excel de kilometraje (.xlsx)", type=["xlsx"], key="km_uploader")
+
     if not km_file:
         st.info("👆 Sube un Excel para ver el reporte de Kilometraje.")
-        st.stop()
+    else:
+        try:
+            xls = pd.ExcelFile(km_file)
+            sheet = st.selectbox("Selecciona hoja", xls.sheet_names, index=0, key="km_sheet")
+            df_km_raw = pd.read_excel(xls, sheet_name=sheet, header=0).dropna(how="all").copy()
+            df_km = build_km_dataset(df_km_raw)
+        except Exception as e:
+            st.error(f"No pude leer/procesar el Excel de kilometraje: {e}")
+            df_km = None
 
-    try:
-        xls = pd.ExcelFile(km_file)
-        sheet = st.selectbox("Selecciona hoja", xls.sheet_names, index=0, key="km_sheet")
-        df_km_raw = pd.read_excel(xls, sheet_name=sheet, header=0).dropna(how="all").copy()
-        df_km = build_km_dataset(df_km_raw)
-    except Exception as e:
-        st.error(f"No pude leer/procesar el Excel de kilometraje: {e}")
-        st.stop()
+        if df_km is not None:
+            st.sidebar.header("Kilometraje — Filtros")
+            mode_period = st.sidebar.radio(
+                "Rango de análisis (Kilometraje)",
+                ["Todo", "Últimos 12 meses"],
+                index=0,
+                key="km_range"
+            )
 
-    st.sidebar.header("Kilometraje — Filtros")
-    mode_period = st.sidebar.radio("Rango de análisis (Kilometraje)", ["Todo", "Últimos 12 meses"], index=0, key="km_range")
+            df_km_f = filter_period(df_km, mode_period)
 
-    df_km_f = filter_period(df_km, mode_period)
+            meses = sorted(df_km_f[K_COL_MES].unique())
+            if not meses:
+                st.error("No hay meses en el rango seleccionado. Revisa que la columna 'Mes' venga como ene-25, feb-25, etc.")
+            else:
+                mes_labels = [month_label(p) for p in meses]
+                mes_sel_label = st.sidebar.selectbox(
+                    "Mes para Top del mes y GPS",
+                    mes_labels,
+                    index=len(mes_labels) - 1,
+                    key="km_month"
+                )
+                mes_sel = meses[mes_labels.index(mes_sel_label)]
 
-    meses = sorted(df_km_f[K_COL_MES].unique())
-    if not meses:
-        st.error("No hay meses en el rango seleccionado. Revisa que la columna 'Mes' esté bien formateada.")
-        st.stop()
+                t_mes = monthly_summary(df_km_f)
+                t_mes_display = t_mes.rename(columns={
+                    "mes_label": "Mes",
+                    "suma_km": "Suma de kilometraje",
+                    "autos": "Autos",
+                    "promedio_km_por_auto": "Promedio (km/auto)"
+                })
 
-    mes_labels = [month_label(p) for p in meses]
-    mes_sel_label = st.sidebar.selectbox("Mes para Top del mes y GPS", mes_labels, index=len(mes_labels) - 1, key="km_month")
-    mes_sel = meses[mes_labels.index(mes_sel_label)]
+                st.markdown("### 1) Resumen mensual")
+                st.dataframe(style_table_minmax(t_mes_display, "Suma de kilometraje"), use_container_width=True, hide_index=True)
 
-    t_mes = monthly_summary(df_km_f)
-    t_mes_display = t_mes.rename(columns={
-        "mes_label": "Mes",
-        "suma_km": "Suma de kilometraje",
-        "autos": "Autos",
-        "promedio_km_por_auto": "Promedio (km/auto)"
-    })
+                st.markdown("### 2) Gráfica: barras (kilometraje) + línea (autos)")
+                st.pyplot(fig_barras_y_diferencia(t_mes), use_container_width=True)
 
-    st.markdown("### 1) Resumen mensual")
-    st.dataframe(style_table_minmax(t_mes_display, "Suma de kilometraje"), use_container_width=True, hide_index=True)
+                st.markdown("### 3) TOP ACUMULADO")
+                top_mat = matrix_top_acumulado_formato(df_km_f)
+                num_cols = [c for c in top_mat.columns if c != "# Económico"]
+                st.dataframe(
+                    top_mat.style.background_gradient(cmap="RdYlGn_r", subset=num_cols),
+                    use_container_width=True,
+                    hide_index=True
+                )
 
-    st.markdown("### 2) Gráfica: barras (kilometraje) + línea (autos)")
-    st.pyplot(fig_barras_y_diferencia(t_mes), use_container_width=True)
+                st.markdown("### 4) Servicios requeridos (cada 10,000 km)")
+                top_total = top_acumulado(df_km_f).rename(columns={
+                    K_COL_EQUIPO: "Vehículo",
+                    "km_total": "Km total",
+                    "servicios_requeridos": "Servicios (floor)"
+                })
+                st.dataframe(top_total, use_container_width=True, hide_index=True)
 
-    st.markdown("### 3) TOP ACUMULADO")
-    top_mat = matrix_top_acumulado_formato(df_km_f)
-    num_cols = [c for c in top_mat.columns if c != "# Económico"]
-    styled_top = top_mat.style.background_gradient(cmap="RdYlGn_r", subset=num_cols)
-    st.dataframe(styled_top, use_container_width=True, hide_index=True)
+                st.markdown(f"### 5) Top del mes seleccionado — {mes_sel_label}")
+                top_m = top_mes(df_km_f, mes_sel).rename(columns={K_COL_EQUIPO: "Vehículo", "km_mes": "Km del mes"})
+                st.dataframe(top_m.head(50), use_container_width=True, hide_index=True)
 
-    st.markdown("### 4) Servicios requeridos (cada 10,000 km)")
-    top_total = top_acumulado(df_km_f).rename(columns={
-        K_COL_EQUIPO: "Vehículo",
-        "km_total": "Km total",
-        "servicios_requeridos": "Servicios (floor)"
-    })
-    st.dataframe(top_total, use_container_width=True, hide_index=True)
+                st.markdown(f"### 6) Vehículos a revisar GPS — {mes_sel_label} (Km = 0)")
+                gps_df = gps_ceros(df_km_f, mes_sel).rename(columns={K_COL_EQUIPO: "Vehículo", "km_mes": "Km del mes"})
+                st.dataframe(gps_df, use_container_width=True, hide_index=True)
 
-    st.markdown(f"### 5) Top del mes seleccionado — {mes_sel_label}")
-    top_m = top_mes(df_km_f, mes_sel).rename(columns={K_COL_EQUIPO: "Vehículo", "km_mes": "Km del mes"})
-    st.dataframe(top_m.head(50), use_container_width=True, hide_index=True)
+                total_autos = int(df_km_f[K_COL_EQUIPO].nunique())
+                km_total = float(df_km_f[K_COL_KM].sum())
+                prom_mensual = float(t_mes["suma_km"].mean()) if not t_mes.empty else 0.0
 
-    st.markdown(f"### 6) Vehículos a revisar GPS — {mes_sel_label} (Km = 0)")
-    gps_df = gps_ceros(df_km_f, mes_sel).rename(columns={K_COL_EQUIPO: "Vehículo", "km_mes": "Km del mes"})
-    st.dataframe(gps_df, use_container_width=True, hide_index=True)
+                k1, k2, k3 = st.columns(3)
+                k1.metric("Autos en análisis", f"{total_autos}")
+                k2.metric("Km total (rango)", f"{km_total:,.2f}")
+                k3.metric("Promedio mensual (km)", f"{prom_mensual:,.2f}")
 
-    total_autos = int(df_km_f[K_COL_EQUIPO].nunique())
-    km_total = float(df_km_f[K_COL_KM].sum())
-    prom_mensual = float(t_mes["suma_km"].mean()) if not t_mes.empty else 0.0
+                st.markdown("### Descargas")
+                matriz_eq_mes = matrix_mes_equipo(df_km_f)
 
-    k1, k2, k3 = st.columns(3)
-    k1.metric("Autos en análisis", f"{total_autos}")
-    k2.metric("Km total (rango)", f"{km_total:,.2f}")
-    k3.metric("Promedio mensual (km)", f"{prom_mensual:,.2f}")
+                datos_km_df = df_km_f.copy()
+                datos_km_df["MES_LABEL"] = datos_km_df["MES"].apply(month_label)
+                datos_km_df = datos_km_df.rename(columns={"NOMBRE DEL EQUIPO": "Vehículo", "KILOMETRAJE": "Kilometraje"})
+                datos_km_df = datos_km_df[["Vehículo", "MES_LABEL", "Kilometraje"]].sort_values(["MES_LABEL", "Vehículo"])
 
-    st.markdown("### Descargas")
-    matriz_eq_mes = matrix_mes_equipo(df_km_f)
+                excel_bytes = to_excel_km_bytes(
+                    tabla_mes=t_mes_display,
+                    matriz_equipo_mes=matriz_eq_mes,
+                    top_acum=top_total,
+                    top_mes_df=top_m,
+                    gps_df=gps_df,
+                    datos_km_df=datos_km_df
+                )
+                st.download_button(
+                    "⬇️ Descargar Excel (Kilometraje completo + Dashboard)",
+                    data=excel_bytes,
+                    file_name=f"GASO_kilometraje_completo_{mode_period.replace(' ', '_')}_{mes_sel_label}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
-    datos_km_df = df_km_f.copy()
-    datos_km_df["MES_LABEL"] = datos_km_df["MES"].apply(month_label)
-    datos_km_df = datos_km_df.rename(columns={
-        "NOMBRE DEL EQUIPO": "Vehículo",
-        "KILOMETRAJE": "Kilometraje"
-    })
-    datos_km_df = datos_km_df[["Vehículo", "MES_LABEL", "Kilometraje"]].sort_values(["MES_LABEL", "Vehículo"])
-
-    excel_bytes = to_excel_km_bytes(
-        tabla_mes=t_mes_display,
-        matriz_equipo_mes=matriz_eq_mes,
-        top_acum=top_total,
-        top_mes_df=top_m,
-        gps_df=gps_df,
-        datos_km_df=datos_km_df
-    )
-    st.download_button(
-        "⬇️ Descargar Excel (Kilometraje completo + Dashboard)",
-        data=excel_bytes,
-        file_name=f"GASO_kilometraje_completo_{mode_period.replace(' ', '_')}_{mes_sel_label}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
-    now_txt = datetime.now().strftime("%Y-%m-%d %H:%M")
-    pdf_bytes = make_pdf_km_report_bytes(
-        title="GASO Comunicaciones — Reporte Ejecutivo de Kilometraje",
-        filtros_txt=f"Rango: {mode_period} | Mes seleccionado: {mes_sel_label}",
-        kpis={
-            "autos": f"{total_autos}",
-            "km_total": f"{km_total:,.2f}",
-            "prom_mensual": f"{prom_mensual:,.2f}",
-            "fecha": now_txt
-        },
-        fig1_png=fig_to_png_bytes(fig_barras_y_diferencia(t_mes)),
-        fig2_png=fig_to_png_bytes(fig_promedio(t_mes)),
-        tabla_mes=t_mes_display,
-        top_mat_df=top_mat,
-        top_total=top_total,
-        top_mes_df=top_m,
-        gps_df=gps_df
-    )
-    st.download_button(
-        "⬇️ Descargar PDF Ejecutivo (Kilometraje)",
-        data=pdf_bytes,
-        file_name=f"GASO_kilometraje_ejecutivo_{mode_period.replace(' ', '_')}_{mes_sel_label}.pdf",
-        mime="application/pdf"
-    )
-
-
+                now_txt = datetime.now().strftime("%Y-%m-%d %H:%M")
+                pdf_bytes = make_pdf_km_report_bytes(
+                    title="GASO Comunicaciones — Reporte Ejecutivo de Kilometraje",
+                    filtros_txt=f"Rango: {mode_period} | Mes seleccionado: {mes_sel_label}",
+                    kpis={"autos": f"{total_autos}", "km_total": f"{km_total:,.2f}", "prom_mensual": f"{prom_mensual:,.2f}", "fecha": now_txt},
+                    fig1_png=fig_to_png_bytes(fig_barras_y_diferencia(t_mes)),
+                    fig2_png=fig_to_png_bytes(fig_promedio(t_mes)),
+                    tabla_mes=t_mes_display,
+                    top_mat_df=top_mat,
+                    top_total=top_total,
+                    top_mes_df=top_m,
+                    gps_df=gps_df
+                )
+                st.download_button(
+                    "⬇️ Descargar PDF Ejecutivo (Kilometraje)",
+                    data=pdf_bytes,
+                    file_name=f"GASO_kilometraje_ejecutivo_{mode_period.replace(' ', '_')}_{mes_sel_label}.pdf",
+                    mime="application/pdf"
+                )
 # -------------------------
 # TAB PALLETS POR SITIO
 # -------------------------
@@ -1137,107 +1144,107 @@ with tab_sitio:
     st.caption("Regla: 1 fila = 1 pallet. No cuenta si ESTATUS DE SALIDA = SALIDA. Encabezado en fila 5 (A5:AC5).")
 
     file_s = st.file_uploader("Sube tu Excel (.xlsx) para este reporte", type=["xlsx"], key="sitios_excel_tab")
+
     if not file_s:
         st.info("👆 Sube un Excel para ver el reporte por Sitio.")
-        st.stop()
+    else:
+        try:
+            xls_s = pd.ExcelFile(file_s)
+            sheet_s = st.selectbox("Selecciona hoja", xls_s.sheet_names, index=0, key="sitios_sheet")
+            df_raw_s = pd.read_excel(xls_s, sheet_name=sheet_s, header=4).dropna(how="all").copy()
+        except Exception as e:
+            st.error(f"No pude leer el Excel: {e}")
+            df_raw_s = None
 
-    try:
-        xls_s = pd.ExcelFile(file_s)
-        sheet_s = st.selectbox("Selecciona hoja", xls_s.sheet_names, index=0, key="sitios_sheet")
-        df_raw_s = pd.read_excel(xls_s, sheet_name=sheet_s, header=4).dropna(how="all").copy()
-    except Exception as e:
-        st.error(f"No pude leer el Excel: {e}")
-        st.stop()
+        if df_raw_s is not None:
+            df_map = normalize_and_map_columns(df_raw_s)
+            needed = [COL_CARRIER, COL_XDOCK, COL_ESTATUS, COL_SITE]
+            missing = [c for c in needed if c not in df_map.columns]
+            if missing:
+                st.error(f"Faltan columnas requeridas para este reporte: {missing}")
+                st.write("Columnas detectadas:", list(df_map.columns))
+            else:
+                xdocks = sorted(df_map[COL_XDOCK].astype(str).str.strip().unique())
+                xdock_sel = st.selectbox("Crossdock", options=["TODOS"] + xdocks, index=0, key="sitios_xdock")
 
-    df_map = normalize_and_map_columns(df_raw_s)
-    needed = [COL_CARRIER, COL_XDOCK, COL_ESTATUS, COL_SITE]
-    missing = [c for c in needed if c not in df_map.columns]
-    if missing:
-        st.error(f"Faltan columnas requeridas para este reporte: {missing}")
-        st.write("Columnas detectadas:", list(df_map.columns))
-        st.stop()
+                active_all = build_active(df_raw_s, ["TODOS"])
+                if xdock_sel != "TODOS":
+                    active_all = active_all[active_all[COL_XDOCK].astype(str).str.strip() == xdock_sel].copy()
+                active_all[COL_SITE] = active_all[COL_SITE].astype(str).str.strip()
 
-    xdocks = sorted(df_map[COL_XDOCK].astype(str).str.strip().unique())
-    xdock_sel = st.selectbox("Crossdock", options=["TODOS"] + xdocks, index=0, key="sitios_xdock")
+                sitios_lista = (
+                    active_all.groupby(COL_SITE)
+                    .size()
+                    .reset_index(name="Pallets")
+                    .sort_values("Pallets", ascending=False)[COL_SITE]
+                    .astype(str)
+                    .tolist()
+                )
 
-    active_all = build_active(df_raw_s, ["TODOS"])
-    if xdock_sel != "TODOS":
-        active_all = active_all[active_all[COL_XDOCK].astype(str).str.strip() == xdock_sel].copy()
-    active_all[COL_SITE] = active_all[COL_SITE].astype(str).str.strip()
+                excluir = st.multiselect("Quitar sitios (prueba/dummy) antes de generar", options=sitios_lista, default=[], key="sitios_excluir")
 
-    sitios_lista = (
-        active_all.groupby(COL_SITE)
-        .size()
-        .reset_index(name="Pallets")
-        .sort_values("Pallets", ascending=False)[COL_SITE]
-        .astype(str)
-        .tolist()
-    )
+                if "sitios_manual_rows" not in st.session_state:
+                    st.session_state.sitios_manual_rows = []
 
-    excluir = st.multiselect("Quitar sitios (prueba/dummy) antes de generar", options=sitios_lista, default=[], key="sitios_excluir")
+                with st.expander("Agregar sitios manuales (opcional)", expanded=False):
+                    c1, c2, c3 = st.columns([2, 1, 1])
+                    manual_site = c1.text_input("Nombre del sitio", key="sitio_manual_nombre")
+                    manual_pallets = c2.number_input("Pallets", min_value=0, step=1, value=0, key="sitio_manual_pallets")
+                    if c3.button("Agregar", key="sitio_manual_add"):
+                        if str(manual_site).strip():
+                            st.session_state.sitios_manual_rows.append({COL_SITE: str(manual_site).strip(), "Pallets": int(manual_pallets)})
 
-    if "sitios_manual_rows" not in st.session_state:
-        st.session_state.sitios_manual_rows = []
+                    if st.session_state.sitios_manual_rows:
+                        st.dataframe(pd.DataFrame(st.session_state.sitios_manual_rows), hide_index=True, use_container_width=True)
+                        if st.button("Limpiar manuales", key="sitio_manual_clear"):
+                            st.session_state.sitios_manual_rows = []
 
-    with st.expander("Agregar sitios manuales (opcional)", expanded=False):
-        c1, c2, c3 = st.columns([2, 1, 1])
-        manual_site = c1.text_input("Nombre del sitio", key="sitio_manual_nombre")
-        manual_pallets = c2.number_input("Pallets", min_value=0, step=1, value=0, key="sitio_manual_pallets")
-        if c3.button("Agregar", key="sitio_manual_add"):
-            if str(manual_site).strip():
-                st.session_state.sitios_manual_rows.append({COL_SITE: str(manual_site).strip(), "Pallets": int(manual_pallets)})
+                def build_pivot(carrier_filter: list[str]) -> pd.DataFrame:
+                    active = build_active(df_raw_s, carrier_filter)
+                    if xdock_sel != "TODOS":
+                        active = active[active[COL_XDOCK].astype(str).str.strip() == xdock_sel].copy()
 
-        if st.session_state.sitios_manual_rows:
-            st.dataframe(pd.DataFrame(st.session_state.sitios_manual_rows), hide_index=True, use_container_width=True)
-            if st.button("Limpiar manuales", key="sitio_manual_clear"):
-                st.session_state.sitios_manual_rows = []
+                    active[COL_SITE] = active[COL_SITE].astype(str).str.strip()
+                    piv = (
+                        active.groupby(COL_SITE, dropna=False)
+                        .size()
+                        .reset_index(name="Pallets")
+                        .sort_values("Pallets", ascending=False)
+                        .reset_index(drop=True)
+                    )
 
-    def build_pivot(carrier_filter: list[str]) -> pd.DataFrame:
-        active = build_active(df_raw_s, carrier_filter)
-        if xdock_sel != "TODOS":
-            active = active[active[COL_XDOCK].astype(str).str.strip() == xdock_sel].copy()
+                    if excluir:
+                        piv = piv[~piv[COL_SITE].isin(excluir)].copy()
 
-        active[COL_SITE] = active[COL_SITE].astype(str).str.strip()
-        piv = (
-            active.groupby(COL_SITE, dropna=False)
-            .size()
-            .reset_index(name="Pallets")
-            .sort_values("Pallets", ascending=False)
-            .reset_index(drop=True)
-        )
+                    if st.session_state.sitios_manual_rows:
+                        manual_df = pd.DataFrame(st.session_state.sitios_manual_rows)
+                        piv = pd.concat([piv, manual_df], ignore_index=True)
+                        piv = piv.groupby(COL_SITE, dropna=False)["Pallets"].sum().reset_index()
+                        piv = piv.sort_values("Pallets", ascending=False).reset_index(drop=True)
 
-        if excluir:
-            piv = piv[~piv[COL_SITE].isin(excluir)].copy()
+                    total = int(piv["Pallets"].sum()) if not piv.empty else 0
+                    piv = pd.concat([piv, pd.DataFrame([{COL_SITE: "TOTAL", "Pallets": total}])], ignore_index=True)
+                    return piv
 
-        if st.session_state.sitios_manual_rows:
-            manual_df = pd.DataFrame(st.session_state.sitios_manual_rows)
-            piv = pd.concat([piv, manual_df], ignore_index=True)
-            piv = piv.groupby(COL_SITE, dropna=False)["Pallets"].sum().reset_index()
-            piv = piv.sort_values("Pallets", ascending=False).reset_index(drop=True)
+                st.markdown("### Generar tabla (copiar y pegar al correo)")
+                b1, b2, b3 = st.columns(3)
 
-        total = int(piv["Pallets"].sum()) if not piv.empty else 0
-        piv = pd.concat([piv, pd.DataFrame([{COL_SITE: "TOTAL", "Pallets": total}])], ignore_index=True)
-        return piv
+                def render(title: str, df_table: pd.DataFrame):
+                    html = df_to_email_html_table(df_table, title=title)
+                    height = min(900, 140 + (len(df_table) * 28))
+                    components.html(html, height=height, scrolling=True)
 
-    st.markdown("### Generar tabla (copiar y pegar al correo)")
-    b1, b2, b3 = st.columns(3)
+                with b1:
+                    if st.button("📋 AMBOS", key="btn_sitios_ambos"):
+                        piv = build_pivot(["TODOS"])
+                        render(f"Pallets por Sitio — TODOS — XDOCK: {xdock_sel}", piv)
 
-    def render(title: str, df_table: pd.DataFrame):
-        html = df_to_email_html_table(df_table, title=title)
-        height = min(900, 140 + (len(df_table) * 28))
-        components.html(html, height=height, scrolling=True)
+                with b2:
+                    if st.button("📋 TELCEL", key="btn_sitios_telcel"):
+                        piv = build_pivot(["TELCEL"])
+                        render(f"Pallets por Sitio — TELCEL — XDOCK: {xdock_sel}", piv)
 
-    with b1:
-        if st.button("📋 AMBOS", key="btn_sitios_ambos"):
-            piv = build_pivot(["TODOS"])
-            render(f"Pallets por Sitio — TODOS — XDOCK: {xdock_sel}", piv)
-
-    with b2:
-        if st.button("📋 TELCEL", key="btn_sitios_telcel"):
-            piv = build_pivot(["TELCEL"])
-            render(f"Pallets por Sitio — TELCEL — XDOCK: {xdock_sel}", piv)
-
-    with b3:
-        if st.button("📋 AT&T", key="btn_sitios_att"):
-            piv = build_pivot(["AT&T"])
-            render(f"Pallets por Sitio — AT&T — XDOCK: {xdock_sel}", piv)
+                with b3:
+                    if st.button("📋 AT&T", key="btn_sitios_att"):
+                        piv = build_pivot(["AT&T"])
+                        render(f"Pallets por Sitio — AT&T — XDOCK: {xdock_sel}", piv)
