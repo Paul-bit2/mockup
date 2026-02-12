@@ -1389,7 +1389,7 @@ def render(title: str, df_table: pd.DataFrame):
     st.markdown("### Vista rápida (NO copiar de aquí)")
     st.dataframe(df_table, use_container_width=True, hide_index=True)
 
-    with b1:
+with b1:
         if st.button("📋 AMBOS", key="btn_sitios_ambos_final_v1"):
             piv = build_pivot(["TODOS"])
             render(f"Pallets por Sitio — TODOS — XDOCK: {xdock_sel}", piv)
