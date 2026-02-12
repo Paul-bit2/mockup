@@ -253,51 +253,55 @@ def fig_to_png_bytes(fig) -> bytes:
     return buf.getvalue()
 def df_to_email_html_table(df: pd.DataFrame, title: str = "") -> str:
     df_show = df.copy().fillna("")
-    header = ""
-    if title:
-        header = f"""
-        <div style="font-family: Arial, sans-serif; font-size: 14px; margin-bottom: 8px;">
-            <b>{title}</b>
-        </div>
-        """
-    html = df_show.to_html(index=False, escape=False)
+    # todo a string
+    for c in df_show.columns:
+        df_show[c] = df_show[c].astype(str)
 
-    styled = f"""
-    {header}
+    cols = [str(c) for c in df_show.columns]
+
+    # Header como PRIMER FILA (td), no th
+    header_row = "".join(
+        f'<td style="background:#111827;color:#FFFFFF;font-weight:bold;padding:6px 8px;'
+        f'border:1px solid #D1D5DB;text-align:center;">{c}</td>'
+        for c in cols
+    )
+    header_row = f"<tr>{header_row}</tr>"
+
+    # Body
+    body_rows = []
+    for _, row in df_show.iterrows():
+        tds = []
+        for v in row.tolist():
+            # resalta TOTAL
+            if v == "TOTAL":
+                tds.append(
+                    '<td style="background:#F3F4F6;font-weight:bold;padding:6px 8px;'
+                    'border:1px solid #D1D5DB;text-align:center;">TOTAL</td>'
+                )
+            else:
+                tds.append(
+                    f'<td style="padding:6px 8px;border:1px solid #D1D5DB;text-align:center;">{v}</td>'
+                )
+        body_rows.append("<tr>" + "".join(tds) + "</tr>")
+
+    title_html = ""
+    if title:
+        title_html = (
+            f'<div style="font-family: Arial, sans-serif; font-size: 14px; margin-bottom: 8px;">'
+            f"<b>{title}</b></div>"
+        )
+
+    html = f"""
+    {title_html}
     <table style="border-collapse: collapse; font-family: Arial, sans-serif; font-size: 12px;">
-        {html.split("<table border=\"1\" class=\"dataframe\">")[1].split("</table>")[0]}
+        <tbody>
+            {header_row}
+            {''.join(body_rows)}
+        </tbody>
     </table>
     """
+    return html
 
-    styled = styled.replace("<th>", "<th style=\"background:#111827;color:#FFFFFF;padding:6px 8px;border:1px solid #D1D5DB;text-align:center;\">")
-    styled = styled.replace("<td>", "<td style=\"padding:6px 8px;border:1px solid #D1D5DB;text-align:center;\">")
-
-    return styled
-
-
-
-def df_to_reportlab_table(df: pd.DataFrame, max_rows=30):
-    show = df.copy()
-    if len(show) > max_rows:
-        show = show.head(max_rows).copy()
-
-    data = [list(show.columns)] + show.values.tolist()
-    t = Table(data, repeatRows=1)
-    t.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, 0), 9),
-                ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey),
-                ("FONTSIZE", (0, 1), (-1, -1), 8),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F7F7F7")]),
-            ]
-        )
-    )
-    return t
 
 def df_to_heatmap_pdf_table(df: pd.DataFrame, max_rows=30, exclude_cols=None):
     
