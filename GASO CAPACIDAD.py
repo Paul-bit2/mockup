@@ -251,56 +251,6 @@ def fig_to_png_bytes(fig) -> bytes:
     plt.close(fig)
     buf.seek(0)
     return buf.getvalue()
-def df_to_email_html_table(df: pd.DataFrame, title: str = "") -> str:
-    df_show = df.copy().fillna("")
-    # todo a string
-    for c in df_show.columns:
-        df_show[c] = df_show[c].astype(str)
-
-    cols = [str(c) for c in df_show.columns]
-
-    # Header como PRIMER FILA (td), no th
-    header_row = "".join(
-        f'<td style="background:#111827;color:#FFFFFF;font-weight:bold;padding:6px 8px;'
-        f'border:1px solid #D1D5DB;text-align:center;">{c}</td>'
-        for c in cols
-    )
-    header_row = f"<tr>{header_row}</tr>"
-
-    # Body
-    body_rows = []
-    for _, row in df_show.iterrows():
-        tds = []
-        for v in row.tolist():
-            # resalta TOTAL
-            if v == "TOTAL":
-                tds.append(
-                    '<td style="background:#F3F4F6;font-weight:bold;padding:6px 8px;'
-                    'border:1px solid #D1D5DB;text-align:center;">TOTAL</td>'
-                )
-            else:
-                tds.append(
-                    f'<td style="padding:6px 8px;border:1px solid #D1D5DB;text-align:center;">{v}</td>'
-                )
-        body_rows.append("<tr>" + "".join(tds) + "</tr>")
-
-    title_html = ""
-    if title:
-        title_html = (
-            f'<div style="font-family: Arial, sans-serif; font-size: 14px; margin-bottom: 8px;">'
-            f"<b>{title}</b></div>"
-        )
-
-    html = f"""
-    {title_html}
-    <table style="border-collapse: collapse; font-family: Arial, sans-serif; font-size: 12px;">
-        <tbody>
-            {header_row}
-            {''.join(body_rows)}
-        </tbody>
-    </table>
-    """
-    return html
 
 
 def df_to_heatmap_pdf_table(df: pd.DataFrame, max_rows=30, exclude_cols=None):
@@ -415,9 +365,6 @@ def df_to_heatmap_pdf_table(df: pd.DataFrame, max_rows=30, exclude_cols=None):
     return table
 
 
-
-    
-
 def make_pdf_report_bytes(
     title: str,
     filters_text: str,
@@ -479,6 +426,59 @@ def make_pdf_report_bytes(
     doc.build(story)
     buf.seek(0)
     return buf.getvalue()
+def df_to_email_html_table(df: pd.DataFrame, title: str = "") -> str:
+    df_show = df.copy().fillna("")
+    for c in df_show.columns:
+        df_show[c] = df_show[c].astype(str)
+
+    cols = [str(c) for c in df_show.columns]
+
+    title_html = ""
+    if title:
+        title_html = f"""
+        <div style="font-family: Arial, sans-serif; font-size: 14px; margin: 0 0 8px 0;">
+            <b>{title}</b>
+        </div>
+        """
+
+    # Header como PRIMER FILA (td) para que se copie siempre
+    header_cells = "".join(
+        f'<td style="background:#111827;color:#FFFFFF;font-weight:bold;padding:8px 10px;'
+        f'border:1px solid #D1D5DB;text-align:left;">{c}</td>'
+        for c in cols
+    )
+    header_row = f"<tr>{header_cells}</tr>"
+
+    body_rows = []
+    for _, row in df_show.iterrows():
+        tds = []
+        for j, v in enumerate(row.tolist()):
+            is_total = (j == 0 and str(v).strip().upper() == "TOTAL")
+            cell_style = (
+                "background:#F3F4F6;font-weight:bold;" if is_total else "background:#FFFFFF;"
+            )
+            align = "left" if j == 0 else "right"
+            tds.append(
+                f'<td style="{cell_style}padding:8px 10px;border:1px solid #D1D5DB;text-align:{align};color:#111827;">{v}</td>'
+            )
+        body_rows.append("<tr>" + "".join(tds) + "</tr>")
+
+    html = f"""
+    <div style="background:#FFFFFF;padding:12px;border:1px solid #E5E7EB;border-radius:10px;">
+        {title_html}
+        <table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:12px;width:100%;">
+            <tbody>
+                {header_row}
+                {''.join(body_rows)}
+            </tbody>
+        </table>
+        <div style="font-family:Arial,sans-serif;font-size:12px;color:#6B7280;margin-top:8px;">
+            Tip: copia desde ESTA tabla (no desde la tabla interactiva) para que se vaya el encabezado.
+        </div>
+    </div>
+    """
+    return html
+
 
 
 # ============================================================
@@ -1378,13 +1378,16 @@ with tab_sitio:
     b1, b2, b3 = st.columns(3)
 
     def render(title: str, df_table: pd.DataFrame):
-        st.markdown("### Vista (en app)")
-        st.dataframe(df_table, use_container_width=True, hide_index=True)
+    """
+    Muestra primero la tabla HTML (copiable con encabezado) y luego la vista rápida.
+    IMPORTANTE: Copia desde la primera tabla (HTML), no desde st.dataframe.
+    """
+    st.markdown("### Copiar para correo (incluye encabezado)")
+    html = df_to_email_html_table(df_table, title=title)
+    st.markdown(html, unsafe_allow_html=True)
 
-        st.markdown("### Tabla para correo (solo copia y pega)")
-        html = df_to_email_html_table(df_table, title=title)
-        st.markdown(html, unsafe_allow_html=True)
-        st.caption("Tip: selecciona la tabla y copia (Ctrl+C) y pégala en el correo.")
+    st.markdown("### Vista rápida (NO copiar de aquí)")
+    st.dataframe(df_table, use_container_width=True, hide_index=True)
 
     with b1:
         if st.button("📋 AMBOS", key="btn_sitios_ambos_final_v1"):
