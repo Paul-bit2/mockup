@@ -1374,26 +1374,25 @@ with tab_sitio:
     # =========================
     # BOTONES (como te gustaba)
     # =========================
-st.markdown("### Generar tabla (copiar y pegar al correo)")
-b1, b2, b3 = st.columns(3)
+    st.markdown("### Generar tabla (copiar y pegar al correo)")
+    b1, b2, b3 = st.columns(3)
 
-def render(title: str, df_table: pd.DataFrame):
-    st.markdown("### Tabla para correo (copia y pega esta)")
-    html = df_to_email_html_table(df_table, title=title)
-    st.markdown(html, unsafe_allow_html=True)
+    def render(title: str, df_table: pd.DataFrame):
+        # SOLO renderiza la tabla bonita (NO st.write, NO st.code, NO dataframe)
+        html = df_to_email_html_table(df_table, title=title)
+        st.markdown(html, unsafe_allow_html=True)
 
+    with b1:
+        if st.button("📋 AMBOS", key="btn_sitios_ambos_final_v1"):
+            piv = build_pivot(["TODOS"])
+            render(f"Pallets por Sitio — TODOS — XDOCK: {xdock_sel}", piv)
 
-with b1:
-    if st.button("📋 AMBOS", key="btn_sitios_ambos_final_v1"):
-        piv = build_pivot(["TODOS"])
-        render(f"Pallets por Sitio — TODOS — XDOCK: {xdock_sel}", piv)
+    with b2:
+        if st.button("📋 TELCEL", key="btn_sitios_telcel_final_v1"):
+            piv = build_pivot(["TELCEL"])
+            render(f"Pallets por Sitio — TELCEL — XDOCK: {xdock_sel}", piv)
 
-with b2:
-    if st.button("📋 TELCEL", key="btn_sitios_telcel_final_v1"):
-        piv = build_pivot(["TELCEL"])
-        render(f"Pallets por Sitio — TELCEL — XDOCK: {xdock_sel}", piv)
-
-with b3:
-    if st.button("📋 AT&T", key="btn_sitios_att_final_v1"):
-        piv = build_pivot(["AT&T"])
-        render(f"Pallets por Sitio — AT&T — XDOCK: {xdock_sel}", piv)
+    with b3:
+        if st.button("📋 AT&T", key="btn_sitios_att_final_v1"):
+            piv = build_pivot(["AT&T"])
+            render(f"Pallets por Sitio — AT&T — XDOCK: {xdock_sel}", piv)
