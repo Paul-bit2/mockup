@@ -1377,7 +1377,7 @@ with tab_sitio:
     st.markdown("### Generar tabla (copiar y pegar al correo)")
     b1, b2, b3 = st.columns(3)
 
-    def render(title: str, df_table: pd.DataFrame):
+def render(title: str, df_table: pd.DataFrame):
     """
     Muestra primero la tabla HTML (copiable con encabezado) y luego la vista rápida.
     IMPORTANTE: Copia desde la primera tabla (HTML), no desde st.dataframe.
