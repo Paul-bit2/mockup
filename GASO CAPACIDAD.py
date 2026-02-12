@@ -1376,7 +1376,7 @@ with tab_sitio:
     # =========================
     st.markdown("### Generar tabla (copiar y pegar al correo)")
     b1, b2, b3 = st.columns(3)
-        with b1:
+with b1:
     if st.button("📋 AMBOS", key="btn_sitios_ambos_final_v1"):
         piv = build_pivot(["TODOS"])
         render(f"Pallets por Sitio — TODOS — XDOCK: {xdock_sel}", piv)
