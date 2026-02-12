@@ -1,6 +1,7 @@
 import io
 import re
 import unicodedata
+import streamlit.components.v1 as components
 from datetime import datetime
 
 import pandas as pd
@@ -426,61 +427,7 @@ def make_pdf_report_bytes(
     doc.build(story)
     buf.seek(0)
     return buf.getvalue()
-def df_to_email_html_table(df: pd.DataFrame, title: str = "") -> str:
-    df_show = df.copy().fillna("")
-    for c in df_show.columns:
-        df_show[c] = df_show[c].astype(str)
-
-    cols = [str(c) for c in df_show.columns]
-
-    title_html = ""
-    if title:
-        title_html = f"""
-        <div style="font-family: Arial, sans-serif; font-size: 14px; margin: 0 0 8px 0;">
-            <b>{title}</b>
-        </div>
-        """
-
-    # Header como PRIMER FILA (td) para que se copie siempre
-    header_cells = "".join(
-        f'<td style="background:#111827;color:#FFFFFF;font-weight:bold;padding:8px 10px;'
-        f'border:1px solid #D1D5DB;text-align:left;">{c}</td>'
-        for c in cols
-    )
-    header_row = f"<tr>{header_cells}</tr>"
-
-    body_rows = []
-    for _, row in df_show.iterrows():
-        tds = []
-        for j, v in enumerate(row.tolist()):
-            is_total = (j == 0 and str(v).strip().upper() == "TOTAL")
-            cell_style = (
-                "background:#F3F4F6;font-weight:bold;" if is_total else "background:#FFFFFF;"
-            )
-            align = "left" if j == 0 else "right"
-            tds.append(
-                f'<td style="{cell_style}padding:8px 10px;border:1px solid #D1D5DB;text-align:{align};color:#111827;">{v}</td>'
-            )
-        body_rows.append("<tr>" + "".join(tds) + "</tr>")
-
-    html = f"""
-    <div style="background:#FFFFFF;padding:12px;border:1px solid #E5E7EB;border-radius:10px;">
-        {title_html}
-        <table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:12px;width:100%;">
-            <tbody>
-                {header_row}
-                {''.join(body_rows)}
-            </tbody>
-        </table>
-        <div style="font-family:Arial,sans-serif;font-size:12px;color:#6B7280;margin-top:8px;">
-            Tip: copia desde ESTA tabla (no desde la tabla interactiva) para que se vaya el encabezado.
-        </div>
-    </div>
-    """
-    return html
-
-
-
+    
 # ============================================================
 # ==================== TAB 2: KILOMETRAJE =====================
 # ============================================================
@@ -921,7 +868,6 @@ def to_excel_km_bytes(tabla_mes, matriz_equipo_mes, top_acum, top_mes_df, gps_df
     out.seek(0)
     return out.getvalue()
 
-
 # =========================
 # UI PRINCIPAL
 # =========================
@@ -931,19 +877,19 @@ tab_crossdock, tab_km, tab_sitio = st.tabs(["Crossdock", "Reporte kilometraje", 
 
 
 # -------------------------
-# TAB CROSSDOCK (TU APP)
+# TAB CROSSDOCK
 # -------------------------
 with tab_crossdock:
     st.markdown("## GASO Comunicaciones — Reporte Ejecutivo de Ocupación de Crossdock")
     st.caption("Regla: 1 fila = 1 pallet. No cuenta si ESTATUS DE SALIDA = SALIDA. Encabezado en fila 5 (A5:AC5).")
 
-    file_sitios = st.file_uploader("Sube tu Excel (.xlsx) para Pallets por Sitio", type=["xlsx"], key="sitios_excel")
-if not file_sitios:
-    st.info("👆 Sube un Excel para ver el reporte de Crossdock.")
-else:
+    file_crossdock = st.file_uploader("Sube tu Excel de Crossdock (.xlsx)", type=["xlsx"], key="crossdock_excel")
+    if not file_crossdock:
+        st.info("👆 Sube un Excel para ver el reporte de Crossdock.")
+        st.stop()
 
     try:
-        xls = pd.ExcelFile(file)
+        xls = pd.ExcelFile(file_crossdock)
         sheet = st.selectbox("Selecciona hoja", xls.sheet_names, index=0, key="crossdock_sheet")
         df_raw = pd.read_excel(xls, sheet_name=sheet, header=4).dropna(how="all").copy()
     except Exception as e:
@@ -1001,12 +947,10 @@ else:
         st.dataframe(pendientes_df, use_container_width=True, hide_index=True)
 
     st.markdown("### Ocupación por Crossdock (m² y %)")
-    fig1 = fig_occupancy_barh(by_xdock)
-    st.pyplot(fig1, use_container_width=True)
+    st.pyplot(fig_occupancy_barh(by_xdock), use_container_width=True)
 
     st.markdown("### Pallets por Tipo (según filtros)")
-    fig2 = fig_pallets_by_type(active)
-    st.pyplot(fig2, use_container_width=True)
+    st.pyplot(fig_pallets_by_type(active), use_container_width=True)
 
     total_pallets = int(active["PALLETS_FILA"].sum())
     total_m2 = float(active["M2_OCUPADOS_FILA"].sum(skipna=True))
@@ -1054,16 +998,16 @@ else:
 
 
 # -------------------------
-# TAB KILOMETRAJE (NUEVO)
+# TAB KILOMETRAJE
 # -------------------------
 with tab_km:
     st.markdown("## GASO Comunicaciones — Reporte Ejecutivo de Kilometraje")
     st.caption("Formato: Item | Mes | Nombre del equipo | Kilometraje (A1 encabezado, datos desde A2).")
 
     km_file = st.file_uploader("Sube tu Excel de kilometraje (.xlsx)", type=["xlsx"], key="km_uploader")
-if not km_file:
-    st.info("👆 Sube un Excel para ver el reporte de Crossdock.")
-else:
+    if not km_file:
+        st.info("👆 Sube un Excel para ver el reporte de Kilometraje.")
+        st.stop()
 
     try:
         xls = pd.ExcelFile(km_file)
@@ -1088,7 +1032,6 @@ else:
     mes_sel_label = st.sidebar.selectbox("Mes para Top del mes y GPS", mes_labels, index=len(mes_labels) - 1, key="km_month")
     mes_sel = meses[mes_labels.index(mes_sel_label)]
 
-    # 1) Tabla resumen mensual con highlight
     t_mes = monthly_summary(df_km_f)
     t_mes_display = t_mes.rename(columns={
         "mes_label": "Mes",
@@ -1100,24 +1043,15 @@ else:
     st.markdown("### 1) Resumen mensual")
     st.dataframe(style_table_minmax(t_mes_display, "Suma de kilometraje"), use_container_width=True, hide_index=True)
 
-    # 2) Gráfica barras + línea (autos, roja)
     st.markdown("### 2) Gráfica: barras (kilometraje) + línea (autos)")
     st.pyplot(fig_barras_y_diferencia(t_mes), use_container_width=True)
 
-    # 3) TOP ACUMULADO
     st.markdown("### 3) TOP ACUMULADO")
-
     top_mat = matrix_top_acumulado_formato(df_km_f)
-
     num_cols = [c for c in top_mat.columns if c != "# Económico"]
-    styled_top = top_mat.style.background_gradient(
-        cmap="RdYlGn_r",
-        subset=num_cols
-    )
-
+    styled_top = top_mat.style.background_gradient(cmap="RdYlGn_r", subset=num_cols)
     st.dataframe(styled_top, use_container_width=True, hide_index=True)
 
-    # 4) Servicios requeridos
     st.markdown("### 4) Servicios requeridos (cada 10,000 km)")
     top_total = top_acumulado(df_km_f).rename(columns={
         K_COL_EQUIPO: "Vehículo",
@@ -1126,17 +1060,14 @@ else:
     })
     st.dataframe(top_total, use_container_width=True, hide_index=True)
 
-    # 5) Top del mes
     st.markdown(f"### 5) Top del mes seleccionado — {mes_sel_label}")
     top_m = top_mes(df_km_f, mes_sel).rename(columns={K_COL_EQUIPO: "Vehículo", "km_mes": "Km del mes"})
     st.dataframe(top_m.head(50), use_container_width=True, hide_index=True)
 
-    # 6) GPS a revisar (km=0)
     st.markdown(f"### 6) Vehículos a revisar GPS — {mes_sel_label} (Km = 0)")
     gps_df = gps_ceros(df_km_f, mes_sel).rename(columns={K_COL_EQUIPO: "Vehículo", "km_mes": "Km del mes"})
     st.dataframe(gps_df, use_container_width=True, hide_index=True)
 
-    # KPIs
     total_autos = int(df_km_f[K_COL_EQUIPO].nunique())
     km_total = float(df_km_f[K_COL_KM].sum())
     prom_mensual = float(t_mes["suma_km"].mean()) if not t_mes.empty else 0.0
@@ -1146,11 +1077,9 @@ else:
     k2.metric("Km total (rango)", f"{km_total:,.2f}")
     k3.metric("Promedio mensual (km)", f"{prom_mensual:,.2f}")
 
-    # Descargas
     st.markdown("### Descargas")
     matriz_eq_mes = matrix_mes_equipo(df_km_f)
 
-    # ===== Datos completos para Excel (sin recortes) =====
     datos_km_df = df_km_f.copy()
     datos_km_df["MES_LABEL"] = datos_km_df["MES"].apply(month_label)
     datos_km_df = datos_km_df.rename(columns={
@@ -1198,76 +1127,28 @@ else:
         file_name=f"GASO_kilometraje_ejecutivo_{mode_period.replace(' ', '_')}_{mes_sel_label}.pdf",
         mime="application/pdf"
     )
+
+
+# -------------------------
+# TAB PALLETS POR SITIO
+# -------------------------
 with tab_sitio:
     st.markdown("## Pallets por Sitio (tabla bonita para correo)")
     st.caption("Regla: 1 fila = 1 pallet. No cuenta si ESTATUS DE SALIDA = SALIDA. Encabezado en fila 5 (A5:AC5).")
 
-    # =========================
-    # HTML BONITO (HEADER NEGRO)
-    # =========================
-    def df_to_email_html_table(df: pd.DataFrame, title: str = "") -> str:
-        df_show = df.copy().fillna("")
-        for c in df_show.columns:
-            df_show[c] = df_show[c].astype(str)
-
-        header = ""
-        if title:
-            header = f"""
-            <div style="font-family: Arial, sans-serif; font-size: 14px; margin-bottom: 8px;">
-                <b>{title}</b>
-            </div>
-            """
-
-        html = df_show.to_html(index=False, escape=False)
-        core = html.split("<table border=\"1\" class=\"dataframe\">")[1].split("</table>")[0]
-
-        styled = f"""
-        {header}
-        <table style="border-collapse: collapse; font-family: Arial, sans-serif; font-size: 12px;">
-            {core}
-        </table>
-        """
-
-        styled = styled.replace(
-            "<th>",
-            "<th style=\"background:#111827;color:#FFFFFF;padding:6px 8px;border:1px solid #D1D5DB;text-align:center;\">",
-        )
-        styled = styled.replace(
-            "<td>",
-            "<td style=\"padding:6px 8px;border:1px solid #D1D5DB;text-align:center;\">",
-        )
-
-        # Resalta fila TOTAL si existe
-        styled = styled.replace(
-            "<td style=\"padding:6px 8px;border:1px solid #D1D5DB;text-align:center;\">TOTAL</td>",
-            "<td style=\"background:#F3F4F6;font-weight:bold;padding:6px 8px;border:1px solid #D1D5DB;text-align:center;\">TOTAL</td>",
-        )
-
-        return styled
-
-    # =========================
-    # UPLOADER INDEPENDIENTE
-    # =========================
-    file_sitios = st.file_uploader(
-        "Sube tu Excel (.xlsx) para este reporte (independiente del tab Crossdock)",
-        type=["xlsx"],
-        key="uploader_sitios_final_v1",
-    )
-    if not file_sitios:
+    file_s = st.file_uploader("Sube tu Excel (.xlsx) para este reporte", type=["xlsx"], key="sitios_excel_tab")
+    if not file_s:
         st.info("👆 Sube un Excel para ver el reporte por Sitio.")
         st.stop()
 
     try:
-        xls_s = pd.ExcelFile(file_sitios)
-        sheet_s = st.selectbox("Selecciona hoja", xls_s.sheet_names, index=0, key="sheet_sitios_final_v1")
+        xls_s = pd.ExcelFile(file_s)
+        sheet_s = st.selectbox("Selecciona hoja", xls_s.sheet_names, index=0, key="sitios_sheet")
         df_raw_s = pd.read_excel(xls_s, sheet_name=sheet_s, header=4).dropna(how="all").copy()
     except Exception as e:
         st.error(f"No pude leer el Excel: {e}")
         st.stop()
 
-    # =========================
-    # VALIDACIÓN COLUMNAS
-    # =========================
     df_map = normalize_and_map_columns(df_raw_s)
     needed = [COL_CARRIER, COL_XDOCK, COL_ESTATUS, COL_SITE]
     missing = [c for c in needed if c not in df_map.columns]
@@ -1276,16 +1157,10 @@ with tab_sitio:
         st.write("Columnas detectadas:", list(df_map.columns))
         st.stop()
 
-    # =========================
-    # SELECTOR XDOCK
-    # =========================
     xdocks = sorted(df_map[COL_XDOCK].astype(str).str.strip().unique())
-    xdock_sel = st.selectbox("Crossdock", options=["TODOS"] + xdocks, index=0, key="sitios_xdock_final_v1")
+    xdock_sel = st.selectbox("Crossdock", options=["TODOS"] + xdocks, index=0, key="sitios_xdock")
 
-    # =========================
-    # LISTA DE SITIOS PARA EXCLUIR
-    # =========================
-    active_all = build_active(df_raw_s, ["TODOS"])  # no filtra carrier
+    active_all = build_active(df_raw_s, ["TODOS"])
     if xdock_sel != "TODOS":
         active_all = active_all[active_all[COL_XDOCK].astype(str).str.strip() == xdock_sel].copy()
     active_all[COL_SITE] = active_all[COL_SITE].astype(str).str.strip()
@@ -1299,48 +1174,30 @@ with tab_sitio:
         .tolist()
     )
 
-    excluir = st.multiselect(
-        "Quitar sitios (prueba/dummy) antes de generar",
-        options=sitios_lista,
-        default=[],
-        key="sitios_excluir_final_v1",
-    )
+    excluir = st.multiselect("Quitar sitios (prueba/dummy) antes de generar", options=sitios_lista, default=[], key="sitios_excluir")
 
-    # =========================
-    # AGREGAR MANUALES
-    # =========================
-    if "sitios_manual_rows_final_v1" not in st.session_state:
-        st.session_state.sitios_manual_rows_final_v1 = []
+    if "sitios_manual_rows" not in st.session_state:
+        st.session_state.sitios_manual_rows = []
 
     with st.expander("Agregar sitios manuales (opcional)", expanded=False):
         c1, c2, c3 = st.columns([2, 1, 1])
-        manual_site = c1.text_input("Nombre del sitio", key="sitios_manual_nombre_final_v1")
-        manual_pallets = c2.number_input("Pallets", min_value=0, step=1, value=0, key="sitios_manual_pallets_final_v1")
-        if c3.button("Agregar", key="sitios_manual_add_final_v1"):
+        manual_site = c1.text_input("Nombre del sitio", key="sitio_manual_nombre")
+        manual_pallets = c2.number_input("Pallets", min_value=0, step=1, value=0, key="sitio_manual_pallets")
+        if c3.button("Agregar", key="sitio_manual_add"):
             if str(manual_site).strip():
-                st.session_state.sitios_manual_rows_final_v1.append(
-                    {COL_SITE: str(manual_site).strip(), "Pallets": int(manual_pallets)}
-                )
-            else:
-                st.warning("Escribe un nombre de sitio válido.")
+                st.session_state.sitios_manual_rows.append({COL_SITE: str(manual_site).strip(), "Pallets": int(manual_pallets)})
 
-        if st.session_state.sitios_manual_rows_final_v1:
-            st.write("Manual agregados:")
-            st.dataframe(pd.DataFrame(st.session_state.sitios_manual_rows_final_v1), hide_index=True, use_container_width=True)
-            if st.button("Limpiar manuales", key="sitios_manual_clear_final_v1"):
-                st.session_state.sitios_manual_rows_final_v1 = []
+        if st.session_state.sitios_manual_rows:
+            st.dataframe(pd.DataFrame(st.session_state.sitios_manual_rows), hide_index=True, use_container_width=True)
+            if st.button("Limpiar manuales", key="sitio_manual_clear"):
+                st.session_state.sitios_manual_rows = []
 
-    # =========================
-    # FUNCIÓN PARA ARMAR TABLA FINAL
-    # =========================
     def build_pivot(carrier_filter: list[str]) -> pd.DataFrame:
         active = build_active(df_raw_s, carrier_filter)
-
         if xdock_sel != "TODOS":
             active = active[active[COL_XDOCK].astype(str).str.strip() == xdock_sel].copy()
 
         active[COL_SITE] = active[COL_SITE].astype(str).str.strip()
-
         piv = (
             active.groupby(COL_SITE, dropna=False)
             .size()
@@ -1349,50 +1206,38 @@ with tab_sitio:
             .reset_index(drop=True)
         )
 
-        # excluir
         if excluir:
             piv = piv[~piv[COL_SITE].isin(excluir)].copy()
 
-        # manuales (sumar)
-        if st.session_state.sitios_manual_rows_final_v1:
-            manual_df = pd.DataFrame(st.session_state.sitios_manual_rows_final_v1)
+        if st.session_state.sitios_manual_rows:
+            manual_df = pd.DataFrame(st.session_state.sitios_manual_rows)
             piv = pd.concat([piv, manual_df], ignore_index=True)
-            piv = (
-                piv.groupby(COL_SITE, dropna=False)["Pallets"]
-                .sum()
-                .reset_index()
-                .sort_values("Pallets", ascending=False)
-                .reset_index(drop=True)
-            )
+            piv = piv.groupby(COL_SITE, dropna=False)["Pallets"].sum().reset_index()
+            piv = piv.sort_values("Pallets", ascending=False).reset_index(drop=True)
 
-        # TOTAL
         total = int(piv["Pallets"].sum()) if not piv.empty else 0
         piv = pd.concat([piv, pd.DataFrame([{COL_SITE: "TOTAL", "Pallets": total}])], ignore_index=True)
-
         return piv
 
-    # =========================
-    # BOTONES (como te gustaba)
-    # =========================
     st.markdown("### Generar tabla (copiar y pegar al correo)")
     b1, b2, b3 = st.columns(3)
 
     def render(title: str, df_table: pd.DataFrame):
-        # SOLO renderiza la tabla bonita (NO st.write, NO st.code, NO dataframe)
         html = df_to_email_html_table(df_table, title=title)
-        st.markdown(html, unsafe_allow_html=True)
+        height = min(900, 140 + (len(df_table) * 28))
+        components.html(html, height=height, scrolling=True)
 
     with b1:
-        if st.button("📋 AMBOS", key="btn_sitios_ambos_final_v1"):
+        if st.button("📋 AMBOS", key="btn_sitios_ambos"):
             piv = build_pivot(["TODOS"])
             render(f"Pallets por Sitio — TODOS — XDOCK: {xdock_sel}", piv)
 
     with b2:
-        if st.button("📋 TELCEL", key="btn_sitios_telcel_final_v1"):
+        if st.button("📋 TELCEL", key="btn_sitios_telcel"):
             piv = build_pivot(["TELCEL"])
             render(f"Pallets por Sitio — TELCEL — XDOCK: {xdock_sel}", piv)
 
     with b3:
-        if st.button("📋 AT&T", key="btn_sitios_att_final_v1"):
+        if st.button("📋 AT&T", key="btn_sitios_att"):
             piv = build_pivot(["AT&T"])
             render(f"Pallets por Sitio — AT&T — XDOCK: {xdock_sel}", piv)
