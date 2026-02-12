@@ -1378,12 +1378,10 @@ st.markdown("### Generar tabla (copiar y pegar al correo)")
 b1, b2, b3 = st.columns(3)
 
 def render(title: str, df_table: pd.DataFrame):
-    st.markdown("### Copiar para correo (incluye encabezado)")
+    st.markdown("### Tabla para correo (copia y pega esta)")
     html = df_to_email_html_table(df_table, title=title)
     st.markdown(html, unsafe_allow_html=True)
 
-    st.markdown("### Vista rápida (NO copiar de aquí)")
-    st.dataframe(df_table, use_container_width=True, hide_index=True)
 
 with b1:
     if st.button("📋 AMBOS", key="btn_sitios_ambos_final_v1"):
