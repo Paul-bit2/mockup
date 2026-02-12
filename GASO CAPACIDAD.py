@@ -402,7 +402,73 @@ def df_to_reportlab_table(df: pd.DataFrame, max_rows=30):
         )
     )
     return t
+    
+def df_to_email_html_table(df: pd.DataFrame, title: str = "") -> str:
+    """
+    Tabla HTML 'tipo Excel' para copiar/pegar a correo:
+    - Header negro
+    - Grid gris
+    - TOTAL en gris
+    """
+    df_show = df.copy()
 
+    # Asegura strings (y evita NaN)
+    df_show = df_show.fillna("")
+    for c in df_show.columns:
+        df_show[c] = df_show[c].astype(str)
+
+    cols = [str(c) for c in df_show.columns]
+
+    title_html = ""
+    if title:
+        title_html = f"""
+        <div style="font-family: Arial, sans-serif; font-size: 14px; margin: 0 0 10px 0;">
+            <b>{title}</b>
+        </div>
+        """
+
+    # construye header
+    header_cells = "".join(
+        f'<th style="background:#111827;color:#FFFFFF;font-weight:700;padding:8px 10px;'
+        f'border:1px solid #D1D5DB;text-align:left;">{c}</th>'
+        for c in cols
+    )
+
+    # construye body
+    body_rows = []
+    for _, row in df_show.iterrows():
+        tds = []
+        row_vals = row.tolist()
+
+        # detecta fila TOTAL (en primera col)
+        first_val = str(row_vals[0]).strip().upper() if row_vals else ""
+        is_total_row = (first_val == "TOTAL")
+
+        for j, v in enumerate(row_vals):
+            align = "left" if j == 0 else "right"
+            bg = "#F3F4F6" if is_total_row else "#FFFFFF"
+            fw = "700" if is_total_row else "400"
+            tds.append(
+                f'<td style="background:{bg};font-weight:{fw};padding:8px 10px;'
+                f'border:1px solid #D1D5DB;text-align:{align};color:#111827;">{v}</td>'
+            )
+
+        body_rows.append("<tr>" + "".join(tds) + "</tr>")
+
+    html = f"""
+    <div style="background:#FFFFFF;padding:12px;border:1px solid #E5E7EB;border-radius:10px;">
+        {title_html}
+        <table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:12px;">
+            <thead>
+                <tr>{header_cells}</tr>
+            </thead>
+            <tbody>
+                {''.join(body_rows)}
+            </tbody>
+        </table>
+    </div>
+    """
+    return html
 
 
 def make_pdf_report_bytes(
