@@ -599,28 +599,9 @@ def build_client_report(df, cols):
     return grp
 
 
-def build_pivot_m2(df, cols):
-    pivot = df.pivot_table(
-        index=cols["xdock"], columns=cols["tipo_material"],
-        values="M2", aggfunc="sum", fill_value=0
-    )
-    pivot["TOTAL M2"]    = pivot.sum(axis=1)
-    pivot["CAPACIDAD"]   = pivot.index.map(CAPACIDADES)
-    pivot["% OCUPACIÓN"] = (pivot["TOTAL M2"] / pivot["CAPACIDAD"]).round(4)
-    return pivot
-
-
-def build_pivot_pallets(df, cols):
-    pivot = df.pivot_table(
-        index=cols["xdock"], columns=cols["tipo_material"],
-        values=cols["no_pallet"], aggfunc="sum", fill_value=0
-    )
-    pivot["TOTAL PALLETS"] = pivot.sum(axis=1)
-    return pivot
-
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  EXCEL EXPORT  (4 sheets: IN-OUT LIMPIO · REPORTE CLIENTE · PIVOT M2 · RESUMEN)
+#  EXCEL EXPORT  (4 sheets: IN-OUT LIMPIO · REPORTE CLIENTE · RESUMEN EJECUTIVO · SITIOS CONSOLIDADOS)
 # ─────────────────────────────────────────────────────────────────────────────
 HEX_BLUE  = "1A3A6B"
 HEX_LIGHT = "2E6DB4"
@@ -859,7 +840,7 @@ def build_original_format_excel(df_clean, df_consol, cols):
     buf.seek(0)
     return buf
 
-def build_excel_output(df_clean, df_consol, pivot_m2, pivot_pal, cols):
+def build_excel_output(df_clean, df_consol, cols):
     wb   = openpyxl.Workbook()
     fecha = datetime.date.today().strftime("%d/%m/%Y")
 
@@ -981,26 +962,7 @@ def build_excel_output(df_clean, df_consol, pivot_m2, pivot_pal, cols):
 
     ws2.freeze_panes = ws2.cell(row=HDR_ROW + 1, column=1)
 
-    # ── 3. PIVOT M2 ──────────────────────────────────────────────────────────
-    ws3 = wb.create_sheet("PIVOT M2")
-    _title_block(ws3, "PIVOT – M² POR CROSSDOCK Y TIPO DE MATERIAL",
-                 "Análisis de metros cuadrados · Factor pasillos 1.20x incluido", fecha)
-    pm2_out = pivot_m2.copy().reset_index()
-    _write_table(ws3, pm2_out, start_row=5)
-    # color % ocupacion column
-    if "% OCUPACIÓN" in pm2_out.columns:
-        pci = list(pm2_out.columns).index("% OCUPACIÓN") + 1
-        for ri in range(len(pm2_out)):
-            c = ws3.cell(row=6 + ri, column=pci)
-            c.number_format = "0.00%"
-            try:
-                c.fill = _pct_fill(float(c.value))
-                c.font = Font(name="Calibri", bold=True, color=HEX_WHITE, size=9)
-                c.alignment = CTR
-            except Exception:
-                pass
-
-    # ── 4. RESUMEN EJECUTIVO ─────────────────────────────────────────────────
+    # ── 3. RESUMEN EJECUTIVO ─────────────────────────────────────────────────
     ws4 = wb.create_sheet("RESUMEN EJECUTIVO")
     ws4.sheet_view.showGridLines = False
     _title_block(ws4, "RESUMEN EJECUTIVO DE OCUPACIÓN",
@@ -1802,7 +1764,6 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### ⚙️ Opciones de Vista")
     show_clean = st.checkbox("Mostrar base limpia", value=False)
-    show_piv   = st.checkbox("Mostrar pivots",      value=False)
 
     # Decision memory manager
     st.markdown("---")
@@ -1865,21 +1826,16 @@ if process_btn:
             saved_dec = load_decisions()
             df_clean, df_consol, df_pending, logs, cols = run_pipeline(uploaded, saved_dec)
 
-            pivot_m2  = build_pivot_m2(df_clean, cols)
-            pivot_pal = build_pivot_pallets(df_clean, cols)
-
             st.session_state.df_clean      = df_clean
             st.session_state.df_consol     = df_consol
             st.session_state.df_pending    = df_pending
-            st.session_state.pivot_m2   = pivot_m2
-            st.session_state.pivot_pal  = pivot_pal
             st.session_state.logs       = logs
             st.session_state.cols       = cols
             st.session_state.processed  = True
 
             # Pre-build Excel
             uploaded.seek(0)
-            excel_buf = build_excel_output(df_clean, df_consol, pivot_m2, pivot_pal, cols)
+            excel_buf = build_excel_output(df_clean, df_consol, cols)
             st.session_state.excel_buf = excel_buf
 
         except Exception as e:
@@ -1891,16 +1847,12 @@ if st.session_state.processed:
     df_clean      = st.session_state.df_clean
     df_consol     = st.session_state.df_consol
     df_pending    = st.session_state.df_pending
-    pivot_m2   = st.session_state.pivot_m2
-    pivot_pal  = st.session_state.pivot_pal
     logs       = st.session_state.logs
     cols       = st.session_state.cols
     # Always ensure excel_buf exists — regenerate if the previous run failed
     if 'excel_buf' not in st.session_state or st.session_state.excel_buf is None:
         with st.spinner("Generando reporte Excel..."):
-            _pm2  = build_pivot_m2(df_clean, cols)
-            _ppal = build_pivot_pallets(df_clean, cols)
-            st.session_state.excel_buf = build_excel_output(df_clean, df_consol, _pm2, _ppal, cols)
+            st.session_state.excel_buf = build_excel_output(df_clean, df_consol, cols)
     excel_buf = st.session_state.excel_buf
 
     xdock_col  = cols["xdock"]
@@ -2105,11 +2057,7 @@ if st.session_state.processed:
         st.markdown(f"**{len(df_show):,}** registros mostrados")
         st.dataframe(df_show.reset_index(drop=True), use_container_width=True, height=340)
 
-    if show_piv:
-        st.markdown('<div class="sec-title">📐 Pivot M²</div>', unsafe_allow_html=True)
-        st.dataframe(pivot_m2.style.format("{:.2f}"), use_container_width=True, height=320)
-        st.markdown('<div class="sec-title">📦 Pivot Pallets</div>', unsafe_allow_html=True)
-        st.dataframe(pivot_pal, use_container_width=True, height=320)
+
 
     # ─────────────────────────────────────────────────────────────────────────
     #  REVISIÓN MANUAL  (with persistent memory)
