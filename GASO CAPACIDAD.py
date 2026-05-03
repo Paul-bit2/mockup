@@ -840,7 +840,7 @@ def build_original_format_excel(df_clean, df_consol, cols):
     buf.seek(0)
     return buf
 
-def build_excel_output(df_clean, df_consol, cols):
+def build_excel_output(df_clean, df_consol, cols, region_filter="Todas"):
     wb   = openpyxl.Workbook()
     fecha = datetime.date.today().strftime("%d/%m/%Y")
 
@@ -849,20 +849,35 @@ def build_excel_output(df_clean, df_consol, cols):
     mat_col    = cols["tipo_material"]
     pallet_col = cols["no_pallet"]
 
+    # Apply region filter
+    if region_filter != "Todas":
+        df_rep    = df_clean[df_clean["REGION"] == region_filter].copy()
+        df_c_rep  = df_consol[df_consol[xdock_col].isin(
+                        [xd for xd in CAPACIDADES if REGION_MAP.get(xd) == region_filter]
+                    )].copy() if len(df_consol) > 0 else df_consol.copy()
+        xdocks_rep = [xd for xd in sorted(CAPACIDADES.keys()) if REGION_MAP.get(xd) == region_filter]
+        region_label = region_filter
+    else:
+        df_rep     = df_clean.copy()
+        df_c_rep   = df_consol.copy()
+        xdocks_rep = sorted(CAPACIDADES.keys())
+        region_label = "Todas las Regiones"
+
     # ── 1. IN-OUT LIMPIO ────────────────────────────────────────────────────
     ws1 = wb.active
     ws1.title = "IN-OUT LIMPIO"
     _title_block(ws1, "BASE DE DATOS – IN-OUT LIMPIO",
-                 "Inventario activo depurado y enriquecido", fecha, n_cols=min(30, len(df_clean.columns)))
-    _write_table(ws1, df_clean.reset_index(drop=True), start_row=5)
+                 f"Inventario activo depurado y enriquecido  |  Región: {region_label}",
+                 fecha, n_cols=min(30, len(df_rep.columns)))
+    _write_table(ws1, df_rep.reset_index(drop=True), start_row=5)
 
     # ── 2. REPORTE CLIENTE ──────────────────────────────────────────────────
     ws2 = wb.create_sheet("REPORTE CLIENTE")
     ws2.sheet_view.showGridLines = False
 
-    carriers = sorted(df_clean[carrier_col].dropna().unique())
-    tipos    = sorted(df_clean[mat_col].dropna().unique())
-    xdocks   = sorted(CAPACIDADES.keys())
+    carriers = sorted(df_rep[carrier_col].dropna().unique())
+    tipos    = sorted(df_rep[mat_col].dropna().unique())
+    xdocks   = xdocks_rep
 
     # Build header columns
     exec_cols  = ["CIUDAD", "REGIÓN", "CAPACIDAD M²"]
@@ -875,7 +890,7 @@ def build_excel_output(df_clean, df_consol, cols):
 
     HDR_ROW = 5
     _title_block(ws2, "REPORTE SEMANAL DE OCUPACIÓN – CLIENTE",
-                 "Resumen ejecutivo por XDOCK · Carrier · Tipo de Material", fecha, n_cols=len(exec_cols))
+                 f"Resumen ejecutivo por XDOCK · Carrier · Tipo de Material  |  Región: {region_label}", fecha, n_cols=len(exec_cols))
 
     ws2.row_dimensions[HDR_ROW].height = 40
     for ci, h in enumerate(exec_cols, 1):
@@ -900,7 +915,7 @@ def build_excel_output(df_clean, df_consol, cols):
         tot_pal = 0; tot_m2 = 0.0
 
         for car in carriers:
-            sub = df_clean[(df_clean[xdock_col] == xd) & (df_clean[carrier_col] == car)]
+            sub = df_rep[(df_rep[xdock_col] == xd) & (df_rep[carrier_col] == car)]
             for tp in tipos:
                 sub2 = sub[sub[mat_col] == tp]
                 row_vals.append(int(sub2[pallet_col].sum()))
@@ -937,8 +952,8 @@ def build_excel_output(df_clean, df_consol, cols):
         c_pct.alignment = CTR
 
     # Totals row
-    tr = HDR_ROW + 1 + len(xdocks)
-    total_cap = sum(CAPACIDADES.values())
+    tr = HDR_ROW + 1 + len(xdocks_rep)
+    total_cap = sum(CAPACIDADES[xd] for xd in xdocks_rep)
     pct_global = round(total_m2_all / total_cap, 4)
 
     ws2.cell(row=tr, column=1, value="TOTAL GLOBAL").font  = Font(name="Calibri", bold=True, color=HEX_WHITE, size=10)
@@ -968,8 +983,8 @@ def build_excel_output(df_clean, df_consol, cols):
     _title_block(ws4, "RESUMEN EJECUTIVO DE OCUPACIÓN",
                  "Indicadores clave de desempeño del inventario en tiempo real", fecha, n_cols=8)
 
-    total_pal   = int(df_clean[pallet_col].sum())
-    total_m2    = round(df_clean["M2"].sum(), 2)
+    total_pal   = int(df_rep[pallet_col].sum())
+    total_m2    = round(df_rep["M2"].sum(), 2)
     disp_global = round(total_cap - total_m2, 2)
 
     # KPI block
@@ -979,7 +994,7 @@ def build_excel_output(df_clean, df_consol, cols):
         ("Capacidad Total del Sistema",   f"{total_cap:,}",          "m²"),
         ("% Ocupación Global",            f"{pct_global*100:.1f}%",  ""),
         ("M² Disponibles",                f"{disp_global:,.2f}",     "m²"),
-        ("Crossdocks activos",            f"{df_clean[xdock_col].nunique()}", "xdocks"),
+        ("Crossdocks activos",            f"{df_rep[xdock_col].nunique()}", "xdocks"),
     ]
     for ci, h in enumerate(["INDICADOR", "VALOR", "UNIDAD"], 1):
         c = ws4.cell(row=5, column=ci, value=h)
@@ -1004,11 +1019,11 @@ def build_excel_output(df_clean, df_consol, cols):
         c.font = HDR_FONT; c.fill = HDR_FILL; c.border = BORDER; c.alignment = CTR
         ws4.column_dimensions[get_column_letter(ci)].width = 16
 
-    for ri, xd in enumerate(xdocks, 15):
+    for ri, xd in enumerate(xdocks_rep, 15):
         ciudad = CIUDAD_MAP.get(xd, xd)
         cap    = CAPACIDADES.get(xd, 0)
-        m2_ocp = round(df_clean[df_clean[xdock_col] == xd]["M2"].sum(), 2)
-        pal    = int(df_clean[df_clean[xdock_col] == xd][pallet_col].sum())
+        m2_ocp = round(df_rep[df_rep[xdock_col] == xd]["M2"].sum(), 2)
+        pal    = int(df_rep[df_rep[xdock_col] == xd][pallet_col].sum())
         pct    = round(m2_ocp / cap, 4) if cap > 0 else 0
         disp   = round(cap - m2_ocp, 2)
         region = REGION_MAP.get(xd, "")
@@ -1042,7 +1057,7 @@ def build_excel_output(df_clean, df_consol, cols):
             c = ws5.cell(row=sum_row + 1, column=ci, value=h)
             c.font = HDR_FONT; c.fill = HDR_FILL; c.border = BORDER; c.alignment = CTR
             ws5.column_dimensions[get_column_letter(ci)].width = 22
-        grp_c = (df_consol.groupby([cols["xdock"], cols["carrier"]])
+        grp_c = (df_c_rep.groupby([cols["xdock"], cols["carrier"]])
                  .size().reset_index(name="SITIOS"))
         for ri2, row2 in grp_c.iterrows():
             er2 = sum_row + 2 + ri2
@@ -1053,7 +1068,7 @@ def build_excel_output(df_clean, df_consol, cols):
                 c.fill = _alt_fill(ri2); c.border = BORDER
                 c.font = DATA_FONT; c.alignment = CTR
     else:
-        ws5["A5"] = "No hay sitios consolidados en esta carga."
+        ws5["A5"] = "No hay sitios consolidados en esta región."
         ws5["A5"].font = Font(name="Calibri", size=10, color="555555")
 
 
@@ -1835,7 +1850,7 @@ if process_btn:
 
             # Pre-build Excel
             uploaded.seek(0)
-            excel_buf = build_excel_output(df_clean, df_consol, cols)
+            excel_buf = build_excel_output(df_clean, df_consol, cols, region_filter='Todas')
             st.session_state.excel_buf = excel_buf
 
         except Exception as e:
@@ -1852,7 +1867,7 @@ if st.session_state.processed:
     # Always ensure excel_buf exists — regenerate if the previous run failed
     if 'excel_buf' not in st.session_state or st.session_state.excel_buf is None:
         with st.spinner("Generando reporte Excel..."):
-            st.session_state.excel_buf = build_excel_output(df_clean, df_consol, cols)
+            st.session_state.excel_buf = build_excel_output(df_clean, df_consol, cols, region_filter='Todas')
     excel_buf = st.session_state.excel_buf
 
     xdock_col  = cols["xdock"]
@@ -2195,12 +2210,36 @@ if st.session_state.processed:
 
     st.markdown("---")
     st.markdown("**📊 Archivos Excel**")
+    xl_r1, xl_r2 = st.columns([3, 2])
+    with xl_r1:
+        xl_region = st.selectbox("Región para el Excel", ["Todas", "REGIÓN LUIS", "REGIÓN JORGE"],
+                                  key="xl_region_select")
+    with xl_r2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        gen_xl_btn = st.button("📊 Generar Reporte Excel", use_container_width=True)
+
+    if gen_xl_btn:
+        with st.spinner("Generando reporte Excel..."):
+            try:
+                xl_buf_new = build_excel_output(df_clean, df_consol, cols, region_filter=xl_region)
+                st.session_state.xl_buf_custom    = xl_buf_new
+                st.session_state.xl_region_custom = xl_region
+                st.success("✅ Excel generado correctamente")
+            except Exception as e:
+                st.error(f"Error generando Excel: {e}")
+                import traceback; st.code(traceback.format_exc())
+
+    # Show download button once generated (or use pre-built full version)
+    xl_download_buf    = st.session_state.get("xl_buf_custom", excel_buf)
+    xl_download_region = st.session_state.get("xl_region_custom", "Todas")
+    xl_region_slug     = xl_download_region.replace(" ","_").replace("Ó","O").replace("É","E").replace("Á","A")
+
     d1, d2, d3 = st.columns(3)
     with d1:
         st.download_button(
             label="📥 Reporte Completo Excel",
-            data=excel_buf,
-            file_name=f"GASO_REPORTE_{fecha_str}.xlsx",
+            data=xl_download_buf,
+            file_name=f"GASO_REPORTE_{xl_region_slug}_{fecha_str}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
