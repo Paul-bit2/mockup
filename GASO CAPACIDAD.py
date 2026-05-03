@@ -1114,9 +1114,28 @@ if st.session_state.processed:
                                else "🟡 ALERTA" if pct > 70 else "🟢 NORMAL"),
         })
     df_ocp_t = pd.DataFrame(ocp_rows)
+
+    def _color_ocp_col(col):
+        styles = []
+        for v in col:
+            try:
+                p = float(v)
+            except (TypeError, ValueError):
+                styles.append("")
+                continue
+            if p > 100:
+                styles.append("background-color:#7B241C;color:white;font-weight:700")
+            elif p > 90:
+                styles.append("background-color:#C0392B;color:white;font-weight:700")
+            elif p > 70:
+                styles.append("background-color:#E67E22;color:white;font-weight:700")
+            else:
+                styles.append("background-color:#1E8449;color:white;font-weight:700")
+        return styles
+
     st.dataframe(
         df_ocp_t.style
-            .background_gradient(subset=["% Ocupación"], cmap="RdYlGn_r", vmin=0, vmax=110)
+            .apply(_color_ocp_col, subset=["% Ocupación"])
             .format({"% Ocupación": "{:.1f}%", "M² Ocupados": "{:,.2f}",
                      "Disponible m²": "{:,.2f}", "Capacidad m²": "{:,}"}),
         use_container_width=True, height=390,
