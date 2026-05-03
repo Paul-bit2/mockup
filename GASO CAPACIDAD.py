@@ -25,11 +25,21 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from unidecode import unidecode
+import base64
+import tempfile
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.units import cm
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Image as RLImage,
+                                 Table, TableStyle, PageBreak, HRFlowable, KeepTogether)
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  CONSTANTS
 # ─────────────────────────────────────────────────────────────────────────────
 DECISIONS_FILE = "gaso_decisions.json"   # persisted next to the script
+LOGO_PATH = "GASO_COMUNICACIONES_LOGO.jpg"  # place beside the script
 
 GASO_BLUE   = "#1A3A6B"
 GASO_LIGHT  = "#2E6DB4"
@@ -684,6 +694,171 @@ def _write_table(ws, df, start_row, freeze=True):
         ws.freeze_panes = ws.cell(row=start_row + 1, column=1)
 
 
+
+def build_original_format_excel(df_clean, df_consol, cols):
+    """Reproduce the original IN-OUT workbook header style with the clean data."""
+    wb   = openpyxl.Workbook()
+    ws   = wb.active
+    ws.title = "IN-OUT"
+    fecha = datetime.date.today().strftime("%d/%m/%Y")
+
+    # ── Colour palette matching the original ──────────────────────────────────
+    C_DARK_BLUE = "002060"   # Row 1 / headers INGRESO
+    C_DARK_GRN  = "0B6A0B"   # headers SALIDA
+    C_GOLD      = "FFD966"   # headers INVENTARIO
+    C_LT_BLUE   = "D9E1F2"   # sub-header INGRESO
+    C_LT_GRN    = "C6EFCE"   # sub-header SALIDA
+    C_LT_GOLD   = "FFF2CC"   # sub-header INVENTARIO
+    C_WHITE     = "FFFFFF"
+
+    def _mk_fill(hex_col):
+        return PatternFill("solid", fgColor=hex_col)
+
+    def _mk_font(bold=False, color=C_WHITE, size=11):
+        return Font(name="Calibri", bold=bold, color=color, size=size)
+
+    def _ctr():
+        return Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    def _lft():
+        return Alignment(horizontal="left", vertical="center")
+
+    # Column layout: map to original widths (A=CARRIER … )
+    # We output only the active/relevant columns
+    out_cols_names = [
+        "CARRIER", "XDOCK", "FECHA DE INGRESO", "HORA DE INGRESO",
+        "FOLIO ALMACEN ORIGEN", "ESTATUS", "CLASIFICACION DE MATERIAL",
+        "TIPO DE MATERIAL", "ID SITIO", "NOMBRE DE SITIO",
+        "FOLIO CLIENTE ( PDM )", "ID PALLET", "NO. DE PALLET",
+        "TIPO DE PALLET", "FOLIO WMS GASO ( UNICO X PALLET )",
+        "DESCRIPCION MATERIAL", "PROYECTO", "SUB-PROYECTO",
+        "FOLIO ENRUTADO CLIENTE", "ESTATUS SALIDA",
+        "REGION", "CIUDAD", "M2", "CONSOLIDADO",
+    ]
+    # Map to df columns (normalized)
+    col_lookup = {
+        "CARRIER":                     cols["carrier"],
+        "XDOCK":                       cols["xdock"],
+        "FECHA DE INGRESO":            resolve_col(df_clean, ["fecha de ingreso"]),
+        "HORA DE INGRESO":             resolve_col(df_clean, ["hora de ingreso"]),
+        "FOLIO ALMACEN ORIGEN":        cols["folio"],
+        "ESTATUS":                     cols["estatus"],
+        "CLASIFICACION DE MATERIAL":   resolve_col(df_clean, ["clasificacion de material"]),
+        "TIPO DE MATERIAL":            cols["tipo_material"],
+        "ID SITIO":                    cols["id_sitio"],
+        "NOMBRE DE SITIO":             cols["nombre_sitio"],
+        "FOLIO CLIENTE ( PDM )":       resolve_col(df_clean, ["folio cliente ( pdm )"]),
+        "ID PALLET":                   resolve_col(df_clean, ["id pallet"]),
+        "NO. DE PALLET":               cols["no_pallet"],
+        "TIPO DE PALLET":              cols["tipo_pallet"],
+        "FOLIO WMS GASO ( UNICO X PALLET )": resolve_col(df_clean, ["folio wms gaso ( unico x pallet )"]),
+        "DESCRIPCION MATERIAL":        cols.get("desc_material"),
+        "PROYECTO":                    resolve_col(df_clean, ["proyecto"]),
+        "SUB-PROYECTO":                resolve_col(df_clean, ["sub-proyecto"]),
+        "FOLIO ENRUTADO CLIENTE":      resolve_col(df_clean, ["folio enrutado cliente"]),
+        "ESTATUS SALIDA":              cols["est_salida"],
+        "REGION":                      "REGION",
+        "CIUDAD":                      "CIUDAD",
+        "M2":                          "M2",
+        "CONSOLIDADO":                 "CONSOLIDADO",
+    }
+    # Original column widths (approx)
+    orig_widths = {
+        "CARRIER": 16.8, "XDOCK": 14.8, "FECHA DE INGRESO": 16.8,
+        "HORA DE INGRESO": 12.8, "FOLIO ALMACEN ORIGEN": 22.8,
+        "ESTATUS": 14.8, "CLASIFICACION DE MATERIAL": 26.8,
+        "TIPO DE MATERIAL": 20.8, "ID SITIO": 18.8, "NOMBRE DE SITIO": 28.8,
+        "FOLIO CLIENTE ( PDM )": 20.8, "ID PALLET": 16.8,
+        "NO. DE PALLET": 16.8, "TIPO DE PALLET": 16.8,
+        "FOLIO WMS GASO ( UNICO X PALLET )": 28.8,
+        "DESCRIPCION MATERIAL": 32.8, "PROYECTO": 18.8, "SUB-PROYECTO": 18.8,
+        "FOLIO ENRUTADO CLIENTE": 22.8, "ESTATUS SALIDA": 16.8,
+        "REGION": 16.8, "CIUDAD": 14.8, "M2": 10.0, "CONSOLIDADO": 12.0,
+    }
+
+    n_cols = len(out_cols_names)
+    last_col_letter = get_column_letter(n_cols)
+
+    # Row 1: REPORTE IN-OUT LIMPIO (dark blue, merged)
+    ws.merge_cells(f"A1:{last_col_letter}1")
+    c = ws["A1"]
+    c.value = "REPORTE IN-OUT"
+    c.font  = _mk_font(bold=True, color=C_WHITE, size=13)
+    c.fill  = _mk_fill(C_DARK_BLUE)
+    c.alignment = _ctr()
+    ws.row_dimensions[1].height = 22
+
+    # Row 2: GASO COMUNICACIONES
+    ws.merge_cells(f"A2:{last_col_letter}2")
+    c = ws["A2"]
+    c.value = f"GASO COMUNICACIONES  –  Base Limpia Procesada  |  {fecha}"
+    c.font  = _mk_font(bold=True, color=C_DARK_BLUE, size=11)
+    c.fill  = _mk_fill("F4F6F9")
+    c.alignment = _ctr()
+    ws.row_dimensions[2].height = 18
+
+    # Row 3: Section labels INGRESO / SALIDA / INVENTARIO
+    # INGRESO spans cols 1-20, SALIDA none (no output), REGION cols 21+
+    ingreso_end   = min(20, n_cols)
+    region_start  = 21
+    ws.merge_cells(f"A3:{get_column_letter(ingreso_end)}3")
+    c = ws["A3"]; c.value = "INGRESO"
+    c.font = _mk_font(bold=True); c.fill = _mk_fill(C_DARK_BLUE); c.alignment = _ctr()
+    if region_start <= n_cols:
+        ws.merge_cells(f"{get_column_letter(region_start)}3:{last_col_letter}3")
+        c = ws[f"{get_column_letter(region_start)}3"]; c.value = "INVENTARIO / MÉTRICAS"
+        c.font = _mk_font(bold=True, color="333333"); c.fill = _mk_fill(C_GOLD); c.alignment = _ctr()
+    ws.row_dimensions[3].height = 18
+
+    # Row 4: Sub-headers INPUT / INVENTARIO
+    ws.merge_cells(f"A4:{get_column_letter(ingreso_end)}4")
+    c = ws["A4"]; c.value = "INPUT"
+    c.font = _mk_font(bold=True, color=C_DARK_BLUE); c.fill = _mk_fill(C_LT_BLUE); c.alignment = _ctr()
+    if region_start <= n_cols:
+        ws.merge_cells(f"{get_column_letter(region_start)}4:{last_col_letter}4")
+        c = ws[f"{get_column_letter(region_start)}4"]; c.value = "INVENTARIO"
+        c.font = _mk_font(bold=True, color="333333"); c.fill = _mk_fill(C_LT_GOLD); c.alignment = _ctr()
+    ws.row_dimensions[4].height = 18
+
+    # Row 5: Column headers
+    ws.row_dimensions[5].height = 30
+    for ci, col_name in enumerate(out_cols_names, 1):
+        is_region_col = ci >= region_start
+        c = ws.cell(row=5, column=ci, value=col_name)
+        c.font  = _mk_font(bold=True, color=C_WHITE, size=11)
+        c.fill  = _mk_fill(C_GOLD if is_region_col else C_DARK_BLUE)
+        if is_region_col:
+            c.font = _mk_font(bold=True, color="333333", size=11)
+        c.alignment = _ctr()
+        c.border = BORDER
+        ws.column_dimensions[get_column_letter(ci)].width = orig_widths.get(col_name, 14.0)
+
+    # Data rows - combine clean + consolidados
+    df_all = pd.concat([df_clean, df_consol], ignore_index=True)
+    thin = Side(style="thin", color="CCCCCC")
+    data_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    for ri, (_, row) in enumerate(df_all.iterrows()):
+        er = 6 + ri
+        alt = ri % 2 == 1
+        base_fill = PatternFill("solid", fgColor="EBF0F7" if alt else "FFFFFF")
+        for ci, col_name in enumerate(out_cols_names, 1):
+            df_col = col_lookup.get(col_name)
+            val = row[df_col] if df_col and df_col in row.index else None
+            c = ws.cell(row=er, column=ci, value=val)
+            c.font      = Font(name="Calibri", size=10)
+            c.alignment = _lft()
+            c.border    = data_border
+            c.fill      = base_fill
+
+    ws.freeze_panes = "A6"
+    ws.auto_filter.ref = f"A5:{last_col_letter}5"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
 def build_excel_output(df_clean, df_consol, pivot_m2, pivot_pal, cols):
     wb   = openpyxl.Workbook()
     fecha = datetime.date.today().strftime("%d/%m/%Y")
@@ -870,8 +1045,8 @@ def build_excel_output(df_clean, df_consol, pivot_m2, pivot_pal, cols):
     for ri, xd in enumerate(xdocks, 15):
         ciudad = CIUDAD_MAP.get(xd, xd)
         cap    = CAPACIDADES.get(xd, 0)
-        m2_ocp = round(df_clean[df_clean[xdock_col] == xd]["M2"].sum(), 2)
-        pal    = int(df_clean[df_clean[xdock_col] == xd][pallet_col].sum())
+        m2_ocp = round(df_view[df_view[xdock_col] == xd]["M2"].sum(), 2)
+        pal    = int(df_view[df_view[xdock_col] == xd][pallet_col].sum())
         pct    = round(m2_ocp / cap, 4) if cap > 0 else 0
         disp   = round(cap - m2_ocp, 2)
         region = REGION_MAP.get(xd, "")
@@ -929,6 +1104,498 @@ def build_excel_output(df_clean, df_consol, pivot_m2, pivot_pal, cols):
 # ─────────────────────────────────────────────────────────────────────────────
 #  PLOTLY CHARTS
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _smart_analysis(xd, pct, total_pal, m2_ocp, cap, tipo_dist):
+    """Generate an intelligent 2-3 sentence analysis for a crossdock."""
+    ciudad = CIUDAD_MAP.get(xd, xd)
+    pct100 = round(pct * 100, 1)
+
+    if pct > 1.0:
+        main = (f"{ciudad} opera al {pct100}% de su capacidad, superando el límite de {cap} m². "
+                f"Con {total_pal} pallets y {m2_ocp:.0f} m² ocupados se requiere acción inmediata: "
+                f"revisar si existen capturas duplicadas o coordinar salidas urgentes.")
+    elif pct > 0.90:
+        main = (f"{ciudad} registra una ocupación crítica del {pct100}% ({m2_ocp:.0f}/{cap} m²). "
+                f"Queda menos del 10% de capacidad disponible — se recomienda programar salidas "
+                f"antes de recibir nuevas entradas.")
+    elif pct > 0.70:
+        main = (f"{ciudad} está en zona de alerta con {pct100}% de ocupación ({m2_ocp:.0f}/{cap} m²). "
+                f"El crossdock puede absorber entregas moderadas pero debe monitorearse semanalmente.")
+    elif pct > 0.30:
+        main = (f"{ciudad} opera a un nivel saludable del {pct100}% ({m2_ocp:.0f}/{cap} m²), "
+                f"con {round(cap-m2_ocp,0):.0f} m² disponibles para nuevas entradas.")
+    else:
+        if total_pal == 0:
+            main = (f"{ciudad} no registra inventario activo en este periodo. "
+                    f"Verificar si el crossdock está operativo o si existen capturas pendientes.")
+        else:
+            main = (f"{ciudad} presenta ocupación baja del {pct100}% ({total_pal} pallets). "
+                    f"Capacidad ampliamente disponible ({round(cap-m2_ocp,0):.0f} m² libres).")
+
+    # Tipo de material note
+    if tipo_dist:
+        top_tipo = max(tipo_dist, key=tipo_dist.get)
+        main += f" El tipo de pallet predominante es {top_tipo}."
+
+    return main
+
+
+def generate_pdf(df_clean, df_consol, cols, region_filter="Todas"):
+    """Build an executive PDF report with charts and smart analysis per crossdock."""
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
+    from reportlab.platypus import Table, TableStyle, PageBreak, HRFlowable, KeepTogether
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib import colors
+    from reportlab.lib.units import cm
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
+    from reportlab.lib.pagesizes import A4, landscape
+
+    # Filter by region if needed
+    if region_filter != "Todas":
+        df_plot = df_clean[df_clean["REGION"] == region_filter].copy()
+        xdocks_plot = [xd for xd in CAPACIDADES if REGION_MAP.get(xd) == region_filter]
+    else:
+        df_plot = df_clean.copy()
+        xdocks_plot = list(CAPACIDADES.keys())
+
+    xdock_col  = cols["xdock"]
+    carrier_col = cols["carrier"]
+    mat_col    = cols["tipo_material"]
+    pallet_col = cols["no_pallet"]
+    fecha_str  = datetime.date.today().strftime("%d de %B de %Y")
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=2*cm, rightMargin=2*cm,
+        topMargin=2.5*cm, bottomMargin=2*cm,
+        title="Reporte Ejecutivo Gaso Comunicaciones",
+        author="Gaso Comunicaciones",
+    )
+
+    # ── Styles ────────────────────────────────────────────────────────────────
+    RL_BLUE  = colors.HexColor("#1A3A6B")
+    RL_LIGHT = colors.HexColor("#2E6DB4")
+    RL_ACCENT= colors.HexColor("#4A90D9")
+    RL_GREEN = colors.HexColor("#1E8449")
+    RL_AMBER = colors.HexColor("#E67E22")
+    RL_RED   = colors.HexColor("#C0392B")
+    RL_DRED  = colors.HexColor("#7B241C")
+    RL_LGRAY = colors.HexColor("#F4F6F9")
+    RL_WHITE = colors.white
+
+    styles = getSampleStyleSheet()
+
+    def _sty(name, **kw):
+        return ParagraphStyle(name, **kw)
+
+    S_COVER_TITLE = _sty("CoverTitle", fontSize=28, textColor=RL_WHITE,
+                          fontName="Helvetica-Bold", alignment=TA_CENTER, spaceAfter=6)
+    S_COVER_SUB   = _sty("CoverSub",   fontSize=13, textColor=colors.HexColor("#C8D8EC"),
+                          fontName="Helvetica", alignment=TA_CENTER, spaceAfter=4)
+    S_COVER_DATE  = _sty("CoverDate",  fontSize=10, textColor=colors.HexColor("#AABBCC"),
+                          fontName="Helvetica", alignment=TA_CENTER)
+    S_H1    = _sty("H1",   fontSize=14, textColor=RL_BLUE, fontName="Helvetica-Bold",
+                   spaceBefore=14, spaceAfter=4, borderPad=0)
+    S_H2    = _sty("H2",   fontSize=11, textColor=RL_LIGHT, fontName="Helvetica-Bold",
+                   spaceBefore=8, spaceAfter=3)
+    S_BODY  = _sty("Body", fontSize=9,  textColor=colors.HexColor("#333333"),
+                   fontName="Helvetica", leading=14, alignment=TA_JUSTIFY, spaceAfter=6)
+    S_SMALL = _sty("Small",fontSize=8,  textColor=colors.HexColor("#777777"),
+                   fontName="Helvetica", leading=11)
+    S_CTR   = _sty("Ctr",  fontSize=9,  textColor=colors.HexColor("#333333"),
+                   fontName="Helvetica", alignment=TA_CENTER)
+    S_BOLD  = _sty("Bold", fontSize=9,  textColor=RL_BLUE, fontName="Helvetica-Bold",
+                   leading=13)
+
+    def _hr():
+        return HRFlowable(width="100%", thickness=1, color=RL_ACCENT, spaceAfter=6, spaceBefore=2)
+
+    def _spacer(h=0.3):
+        return Spacer(1, h*cm)
+
+    def _fig_to_image(fig, width_cm=16, height_cm=8):
+        """Export a plotly figure to a ReportLab Image flowable."""
+        img_bytes = fig.to_image(format="png", width=int(width_cm/16*1200),
+                                  height=int(height_cm/8*600), scale=2)
+        return RLImage(io.BytesIO(img_bytes), width=width_cm*cm, height=height_cm*cm)
+
+    story = []
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # COVER PAGE
+    # ══════════════════════════════════════════════════════════════════════════
+    # Blue cover rectangle via a 1-cell table
+    region_label = region_filter if region_filter != "Todas" else "Todas las Regiones"
+    cover_data = [[Paragraph("GASO COMUNICACIONES", S_COVER_TITLE)],
+                  [Paragraph("Reporte Ejecutivo de Ocupación de Inventario", S_COVER_SUB)],
+                  [Paragraph(f"Región: {region_label}", S_COVER_SUB)],
+                  [Paragraph(fecha_str, S_COVER_DATE)]]
+    cover_tbl = Table(cover_data, colWidths=[17*cm])
+    cover_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,-1), RL_BLUE),
+        ("TOPPADDING",    (0,0), (-1,0),  60),
+        ("BOTTOMPADDING", (0,-1),(-1,-1), 60),
+        ("LEFTPADDING",   (0,0), (-1,-1), 20),
+        ("RIGHTPADDING",  (0,0), (-1,-1), 20),
+        ("ROWBACKGROUNDS",(0,0), (-1,-1), [RL_BLUE]),
+    ]))
+
+    # Logo if available
+    if os.path.exists(LOGO_PATH):
+        try:
+            logo = RLImage(LOGO_PATH, width=4*cm, height=2*cm)
+            logo.hAlign = "CENTER"
+            story.append(_spacer(1))
+            story.append(logo)
+            story.append(_spacer(0.5))
+        except Exception:
+            story.append(_spacer(3))
+    else:
+        story.append(_spacer(5))
+
+    story.append(cover_tbl)
+    story.append(_spacer(1))
+
+    # KPI summary boxes on cover
+    total_pal  = int(df_plot[pallet_col].sum())
+    total_m2   = round(df_plot["M2"].sum(), 2)
+    cap_region = sum(CAPACIDADES[xd] for xd in xdocks_plot)
+    pct_global = round(total_m2 / cap_region * 100, 1) if cap_region > 0 else 0
+    disponible = round(cap_region - total_m2, 2)
+    n_consol   = len(df_consol[df_consol[xdock_col].isin(xdocks_plot)] if len(df_consol) > 0 else df_consol)
+
+    def _pct_color(p):
+        if p > 100: return RL_DRED
+        if p > 90:  return RL_RED
+        if p > 70:  return RL_AMBER
+        return RL_GREEN
+
+    kpi_rows = [[
+        Paragraph(f"<b>{total_pal:,}</b><br/>Pallets Activos", S_CTR),
+        Paragraph(f"<b>{total_m2:,.0f} m²</b><br/>M² Ocupados", S_CTR),
+        Paragraph(f"<b>{cap_region:,} m²</b><br/>Capacidad Total", S_CTR),
+        Paragraph(f"<b>{pct_global}%</b><br/>% Ocupación", S_CTR),
+        Paragraph(f"<b>{disponible:,.0f} m²</b><br/>Disponible", S_CTR),
+    ]]
+    kpi_tbl = Table(kpi_rows, colWidths=[3.3*cm]*5)
+    pct_bg = _pct_color(pct_global)
+    kpi_tbl.setStyle(TableStyle([
+        ("BACKGROUND", (0,0),(0,0), colors.HexColor("#EBF0F7")),
+        ("BACKGROUND", (1,0),(1,0), colors.HexColor("#EBF0F7")),
+        ("BACKGROUND", (2,0),(2,0), colors.HexColor("#EBF0F7")),
+        ("BACKGROUND", (3,0),(3,0), pct_bg),
+        ("BACKGROUND", (4,0),(4,0), colors.HexColor("#EBF0F7")),
+        ("TEXTCOLOR",  (3,0),(3,0), RL_WHITE),
+        ("FONTNAME",   (3,0),(3,0), "Helvetica-Bold"),
+        ("ALIGN",      (0,0),(-1,-1), "CENTER"),
+        ("VALIGN",     (0,0),(-1,-1), "MIDDLE"),
+        ("ROWHEIGHT",  (0,0),(-1,-1), 1.5*cm),
+        ("BOX",        (0,0),(-1,-1), 0.5, RL_ACCENT),
+        ("INNERGRID",  (0,0),(-1,-1), 0.3, colors.HexColor("#CCDDEE")),
+        ("TOPPADDING", (0,0),(-1,-1), 8),
+        ("BOTTOMPADDING",(0,0),(-1,-1),8),
+    ]))
+    story.append(kpi_tbl)
+    story.append(PageBreak())
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PAGE 2: RESUMEN DE OCUPACIÓN
+    # ══════════════════════════════════════════════════════════════════════════
+    story.append(Paragraph("1. Resumen de Ocupación por Crossdock", S_H1))
+    story.append(_hr())
+
+    # Build occupancy fig
+    ocp = []
+    for xd in xdocks_plot:
+        cap    = CAPACIDADES[xd]
+        m2_ocp = round(df_plot[df_plot[xdock_col]==xd]["M2"].sum(), 2)
+        pct    = m2_ocp / cap if cap > 0 else 0
+        ocp.append({"Ciudad": CIUDAD_MAP.get(xd,xd), "pct": round(pct*100,1),
+                    "M2_ocp": m2_ocp, "cap": cap, "disp": round(cap-m2_ocp,1), "xd": xd})
+    df_ocp = pd.DataFrame(ocp).sort_values("pct", ascending=True)
+
+    fig_ocp = go.Figure(go.Bar(
+        x=df_ocp["pct"], y=df_ocp["Ciudad"], orientation="h",
+        marker_color=[_color_pct(p/100) for p in df_ocp["pct"]],
+        text=[f"{p}%" for p in df_ocp["pct"]], textposition="outside",
+    ))
+    for v, lbl, clr in [(70,"70%","#E67E22"),(90,"90%","#C0392B"),(100,"100%","#7B241C")]:
+        fig_ocp.add_vline(x=v, line_dash="dot", line_color=clr,
+                          annotation_text=lbl, annotation_font_color=clr)
+    fig_ocp.update_layout(
+        title="", xaxis_title="% Ocupación", yaxis_title="",
+        plot_bgcolor="white", paper_bgcolor="white",
+        height=350, margin=dict(l=10,r=80,t=10,b=30),
+        font=dict(family="Helvetica", color="#1A3A6B"),
+        xaxis=dict(range=[0, max(df_ocp["pct"].max()*1.18, 115)]),
+    )
+    story.append(_fig_to_image(fig_ocp, 16, 7.5))
+    story.append(_spacer(0.3))
+
+    # ── Per-crossdock analysis table ──────────────────────────────────────────
+    story.append(Paragraph("Análisis por Crossdock", S_H2))
+    tbl_hdr = ["Ciudad", "Cap. m²", "M² Ocup.", "% Ocup.", "Disponible", "Status"]
+    tbl_rows = [tbl_hdr]
+    for row_d in ocp:
+        xd    = row_d["xd"]
+        pct_v = row_d["pct"]
+        st_lbl = ("SATURADO" if pct_v>100 else "CRÍTICO" if pct_v>90
+                  else "ALERTA" if pct_v>70 else "NORMAL")
+        tbl_rows.append([
+            row_d["Ciudad"],
+            f"{row_d['cap']:,}",
+            f"{row_d['M2_ocp']:,.0f}",
+            f"{pct_v:.1f}%",
+            f"{row_d['disp']:,.0f}",
+            st_lbl,
+        ])
+    ocp_tbl = Table(tbl_rows, colWidths=[3.2*cm, 2.2*cm, 2.2*cm, 2.2*cm, 2.4*cm, 2.4*cm])
+
+    def _status_color(s):
+        if "SATURADO" in s: return RL_DRED
+        if "CRÍTICO"  in s: return RL_RED
+        if "ALERTA"   in s: return RL_AMBER
+        return RL_GREEN
+
+    ts = [
+        ("BACKGROUND",   (0,0),(-1,0), RL_BLUE),
+        ("TEXTCOLOR",    (0,0),(-1,0), RL_WHITE),
+        ("FONTNAME",     (0,0),(-1,0), "Helvetica-Bold"),
+        ("FONTSIZE",     (0,0),(-1,-1), 8),
+        ("ALIGN",        (0,0),(-1,-1), "CENTER"),
+        ("VALIGN",       (0,0),(-1,-1), "MIDDLE"),
+        ("ROWHEIGHT",    (0,0),(-1,-1), 0.6*cm),
+        ("BOX",          (0,0),(-1,-1), 0.5, RL_ACCENT),
+        ("INNERGRID",    (0,0),(-1,-1), 0.3, colors.HexColor("#CCDDEE")),
+        ("TOPPADDING",   (0,0),(-1,-1), 4),
+        ("BOTTOMPADDING",(0,0),(-1,-1), 4),
+    ]
+    for ri, row_d in enumerate(ocp[: ], 1):
+        bg = colors.HexColor("#EBF0F7") if ri%2==0 else colors.white
+        ts.append(("BACKGROUND", (0,ri),(-2,ri), bg))
+        pct_v = row_d["pct"]
+        ts.append(("BACKGROUND", (-1,ri),(-1,ri), _status_color(
+            "SATURADO" if pct_v>100 else "CRÍTICO" if pct_v>90 else "ALERTA" if pct_v>70 else "NORMAL")))
+        ts.append(("TEXTCOLOR",  (-1,ri),(-1,ri), RL_WHITE))
+        ts.append(("FONTNAME",   (-1,ri),(-1,ri), "Helvetica-Bold"))
+
+    ocp_tbl.setStyle(TableStyle(ts))
+    story.append(ocp_tbl)
+    story.append(_spacer(0.4))
+
+    # Global analysis paragraph
+    sat = [r for r in ocp if r["pct"]>100]
+    crit= [r for r in ocp if 90<r["pct"]<=100]
+    ok  = [r for r in ocp if r["pct"]<=70]
+    analysis_lines = []
+    if sat:
+        analysis_lines.append(
+            f"<b>Saturación detectada:</b> {', '.join(r['Ciudad'] for r in sat)} superan el 100% de capacidad. "
+            "Esto puede indicar capturas sin confirmación de salida o errores de registro — se recomienda auditoria inmediata."
+        )
+    if crit:
+        analysis_lines.append(
+            f"<b>Nivel crítico:</b> {', '.join(r['Ciudad'] for r in crit)} están entre el 90-100%. "
+            "Priorizar coordinar salidas antes de nuevas recepciones."
+        )
+    if not sat and not crit:
+        analysis_lines.append("El inventario global se encuentra en niveles manejables. Continuar monitoreo semanal.")
+    if ok:
+        analysis_lines.append(
+            f"{', '.join(r['Ciudad'] for r in ok)} tienen capacidad ampliamente disponible."
+        )
+    for line in analysis_lines:
+        story.append(Paragraph(line, S_BODY))
+
+    story.append(PageBreak())
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PAGE 3: M² y MATERIAL
+    # ══════════════════════════════════════════════════════════════════════════
+    story.append(Paragraph("2. Análisis de M² y Tipo de Material", S_H1))
+    story.append(_hr())
+
+    # Stacked M2 chart
+    fig_m2 = go.Figure([
+        go.Bar(x=df_ocp["Ciudad"], y=df_ocp["M2_ocp"], name="M² Ocupados",
+               marker_color=GASO_LIGHT),
+        go.Bar(x=df_ocp["Ciudad"], y=df_ocp["disp"], name="Disponible",
+               marker_color="#D5E8F5"),
+    ])
+    fig_m2.update_layout(
+        barmode="stack", title="", xaxis_title="", yaxis_title="m²",
+        plot_bgcolor="white", paper_bgcolor="white",
+        height=300, margin=dict(l=10,r=10,t=10,b=60),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        font=dict(family="Helvetica", color="#1A3A6B"),
+    )
+    story.append(_fig_to_image(fig_m2, 16, 6.5))
+    story.append(Paragraph(
+        f"La capacidad total de la región seleccionada es de <b>{cap_region:,} m²</b>. "
+        f"Actualmente se ocupan <b>{total_m2:,.0f} m²</b>, dejando <b>{disponible:,.0f} m²</b> disponibles "
+        f"({round(100-pct_global,1)}% de holgura). "
+        f"El factor de pasillos del 20% ya está incluido en todos los cálculos.",
+        S_BODY))
+    story.append(_spacer(0.3))
+
+    # Material pie + heatmap side by side
+    mat_grp = df_plot.groupby(mat_col)[pallet_col].sum().reset_index()
+    mat_grp.columns = ["Tipo", "Pallets"]
+    fig_pie = px.pie(mat_grp, names="Tipo", values="Pallets", hole=0.42,
+                     color_discrete_sequence=[GASO_BLUE, GASO_ACCENT, "#E67E22", "#8E44AD", "#1E8449"])
+    fig_pie.update_traces(textinfo="percent+label")
+    fig_pie.update_layout(plot_bgcolor="white", paper_bgcolor="white",
+                          showlegend=False, height=280,
+                          margin=dict(l=10,r=10,t=10,b=10),
+                          font=dict(family="Helvetica", color="#1A3A6B"))
+
+    heat = df_plot.groupby([xdock_col, mat_col])["M2"].sum().reset_index()
+    hp   = heat.pivot(index=xdock_col, columns=mat_col, values="M2").fillna(0)
+    hp.index = [CIUDAD_MAP.get(x,x) for x in hp.index]
+    fig_heat = px.imshow(hp.round(1), text_auto=".0f", aspect="auto",
+                         color_continuous_scale=[[0,"#EBF5FB"],[0.5,GASO_ACCENT],[1,GASO_BLUE]])
+    fig_heat.update_layout(plot_bgcolor="white", paper_bgcolor="white", height=280,
+                            margin=dict(l=10,r=10,t=30,b=10),
+                            font=dict(family="Helvetica", color="#1A3A6B"),
+                            coloraxis_showscale=False)
+
+    story.append(Paragraph("Distribución por Tipo de Material", S_H2))
+    side_data = [[_fig_to_image(fig_pie, 7.8, 6), _fig_to_image(fig_heat, 8.8, 6)]]
+    side_tbl  = Table(side_data, colWidths=[8*cm, 9*cm])
+    side_tbl.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"TOP"),
+                                   ("LEFTPADDING",(0,0),(-1,-1),0),
+                                   ("RIGHTPADDING",(0,0),(-1,-1),4)]))
+    story.append(side_tbl)
+
+    top_mat = mat_grp.sort_values("Pallets", ascending=False).iloc[0]["Tipo"] if len(mat_grp) else "N/A"
+    story.append(Paragraph(
+        f"El tipo de material predominante es <b>{top_mat}</b>. "
+        "El mapa de calor muestra la distribución de m² por tipo en cada crossdock, "
+        "permitiendo identificar concentraciones de material específico.",
+        S_BODY))
+
+    story.append(PageBreak())
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # PAGE 4: CARRIER y ANÁLISIS INDIVIDUAL
+    # ══════════════════════════════════════════════════════════════════════════
+    story.append(Paragraph("3. Análisis por Carrier y Crossdock", S_H1))
+    story.append(_hr())
+
+    car_grp = df_plot.groupby(carrier_col)[pallet_col].sum().reset_index()
+    car_grp.columns = ["Carrier", "Pallets"]
+    fig_car = px.bar(car_grp.sort_values("Pallets", ascending=False),
+                     x="Carrier", y="Pallets", text="Pallets",
+                     color="Carrier",
+                     color_discrete_sequence=[GASO_BLUE, GASO_ACCENT, "#E67E22", "#8E44AD"])
+    fig_car.update_traces(textposition="outside")
+    fig_car.update_layout(showlegend=False, plot_bgcolor="white", paper_bgcolor="white",
+                          height=300, margin=dict(l=10,r=10,t=10,b=40),
+                          font=dict(family="Helvetica", color="#1A3A6B"),
+                          xaxis_title="", yaxis_title="Pallets")
+    story.append(_fig_to_image(fig_car, 16, 6.5))
+
+    top_carrier = car_grp.sort_values("Pallets", ascending=False).iloc[0]["Carrier"] if len(car_grp) else "N/A"
+    top_car_pal = int(car_grp.sort_values("Pallets", ascending=False).iloc[0]["Pallets"]) if len(car_grp) else 0
+    story.append(Paragraph(
+        f"El carrier con mayor volumen de inventario es <b>{top_carrier}</b> con <b>{top_car_pal:,} pallets</b>. "
+        "Un alto volumen de un solo carrier puede representar un riesgo operativo "
+        "si existen retrasos en sus salidas programadas.",
+        S_BODY))
+    story.append(_spacer(0.4))
+
+    # ── Individual crossdock analysis ─────────────────────────────────────────
+    story.append(Paragraph("4. Análisis Individual por Crossdock", S_H1))
+    story.append(_hr())
+
+    for row_d in sorted(ocp, key=lambda r: r["pct"], reverse=True):
+        xd     = row_d["xd"]
+        ciudad = row_d["Ciudad"]
+        cap    = row_d["cap"]
+        m2_ocp = row_d["M2_ocp"]
+        pct_v  = row_d["pct"]
+        pal    = int(df_plot[df_plot[xdock_col]==xd][pallet_col].sum())
+
+        tipo_dist = df_plot[df_plot[xdock_col]==xd].groupby(cols["tipo_pallet"])[pallet_col].sum().to_dict()
+
+        analysis_text = _smart_analysis(xd, pct_v/100, pal, m2_ocp, cap, tipo_dist)
+        status_lbl    = ("🔴 SATURADO" if pct_v>100 else "🔴 CRÍTICO" if pct_v>90
+                         else "🟡 ALERTA" if pct_v>70 else "🟢 NORMAL")
+        st_color = (_pct_color(pct_v/100))
+
+        block = [
+            Paragraph(f"{ciudad}  —  {status_lbl}", S_H2),
+            Table([[
+                Paragraph(f"<b>Pallets:</b> {pal:,}", S_BOLD),
+                Paragraph(f"<b>M² Ocup.:</b> {m2_ocp:,.0f}", S_BOLD),
+                Paragraph(f"<b>Capacidad:</b> {cap:,} m²", S_BOLD),
+                Paragraph(f"<b>Ocupación:</b> {pct_v:.1f}%", S_BOLD),
+            ]], colWidths=[3.8*cm]*4,
+               style=TableStyle([
+                   ("BACKGROUND",(0,0),(-1,-1), colors.HexColor("#F4F6F9")),
+                   ("BOX",(0,0),(-1,-1),0.5,RL_ACCENT),
+                   ("INNERGRID",(0,0),(-1,-1),0.2,colors.HexColor("#CCDDEE")),
+                   ("ALIGN",(0,0),(-1,-1),"CENTER"),
+                   ("TOPPADDING",(0,0),(-1,-1),5),
+                   ("BOTTOMPADDING",(0,0),(-1,-1),5),
+               ])),
+            _spacer(0.2),
+            Paragraph(analysis_text, S_BODY),
+            _spacer(0.2),
+            _hr(),
+        ]
+        story.append(KeepTogether(block))
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # LAST PAGE: SITIOS CONSOLIDADOS + FOOTER
+    # ══════════════════════════════════════════════════════════════════════════
+    story.append(PageBreak())
+    story.append(Paragraph("5. Sitios Consolidados", S_H1))
+    story.append(_hr())
+
+    df_cons_region = df_consol[df_consol[xdock_col].isin(xdocks_plot)] if len(df_consol) > 0 else df_consol
+    n_consol_r = len(df_cons_region)
+    story.append(Paragraph(
+        f"Se identificaron <b>{n_consol_r} sitios consolidados</b> (pallets con valor 0) "
+        "que corresponden a material pequeño ubicado sobre otra tarima. "
+        "Estos registros <b>no impactan el cálculo de capacidad ni de m²</b> "
+        "pero se mantienen en el inventario para trazabilidad.",
+        S_BODY))
+
+    if n_consol_r > 0:
+        grp_c = df_cons_region.groupby([xdock_col, carrier_col]).size().reset_index(name="Sitios")
+        grp_c["Ciudad"] = grp_c[xdock_col].map(CIUDAD_MAP)
+        cons_data  = [["Ciudad", "Carrier", "Sitios Consolidados"]]
+        for _, r in grp_c.iterrows():
+            cons_data.append([r["Ciudad"], r[carrier_col], str(r["Sitios"])])
+        cons_tbl = Table(cons_data, colWidths=[5*cm, 5*cm, 5*cm])
+        cons_tbl.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,0), RL_BLUE),
+            ("TEXTCOLOR", (0,0),(-1,0), RL_WHITE),
+            ("FONTNAME",  (0,0),(-1,0), "Helvetica-Bold"),
+            ("FONTSIZE",  (0,0),(-1,-1), 9),
+            ("ALIGN",     (0,0),(-1,-1), "CENTER"),
+            ("ROWHEIGHT", (0,0),(-1,-1), 0.65*cm),
+            ("BOX",       (0,0),(-1,-1), 0.5, RL_ACCENT),
+            ("INNERGRID", (0,0),(-1,-1), 0.3, colors.HexColor("#CCDDEE")),
+            ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white, colors.HexColor("#EBF0F7")]),
+        ]))
+        story.append(cons_tbl)
+
+    # Footer note
+    story.append(_spacer(1))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#CCDDEE")))
+    story.append(Paragraph(
+        f"Reporte generado automáticamente por el sistema IN-OUT de Gaso Comunicaciones  |  {fecha_str}  |  Confidencial",
+        _sty("Footer", fontSize=7, textColor=colors.HexColor("#AAAAAA"),
+             fontName="Helvetica", alignment=TA_CENTER, spaceBefore=6)
+    ))
+
+    doc.build(story)
+    buf.seek(0)
+    return buf
+
 def _color_pct(pct):
     if pct > 1.0:  return "#7B241C"
     if pct > 0.90: return "#C0392B"
@@ -1158,7 +1825,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown(f"""
     <div style="font-size:.7rem;color:#AAA;text-align:center">
-    v2.0.0 · Gaso Comunicaciones<br>Procesamiento automático de inventario
+    v3.0.0 · Gaso Comunicaciones<br>Procesamiento automático de inventario
     </div>""", unsafe_allow_html=True)
 
 # ── Header ────────────────────────────────────────────────────────────────────
@@ -1238,17 +1905,43 @@ if st.session_state.processed:
         st.markdown('<div class="log-box">' + "<br>".join(logs) + "</div>",
                     unsafe_allow_html=True)
 
+
+    # ── Filtro de Región ──────────────────────────────────────────────────────
+    st.markdown('<div class="sec-title">🗺️ Filtro de Región</div>', unsafe_allow_html=True)
+    rf1, rf2, rf3 = st.columns([2, 2, 5])
+    with rf1:
+        region_filter = st.selectbox(
+            "Analizar región",
+            ["Todas", "REGIÓN LUIS", "REGIÓN JORGE"],
+            key="region_filter",
+            help="Filtra todos los KPIs, gráficas y tabla de ocupación por región."
+        )
+    with rf2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if region_filter != "Todas":
+            xd_in_region = [xd for xd in CAPACIDADES if REGION_MAP.get(xd) == region_filter]
+            st.caption(f"**{len(xd_in_region)} crossdocks** en {region_filter}: "
+                       + ", ".join(CIUDAD_MAP.get(x,x) for x in xd_in_region))
+
+    # Apply region filter to working dataframe for KPIs / charts / tables
+    if region_filter == "Todas":
+        df_view = df_clean.copy()
+        xdocks_view = list(CAPACIDADES.keys())
+    else:
+        df_view = df_clean[df_clean["REGION"] == region_filter].copy()
+        xdocks_view = [xd for xd in CAPACIDADES if REGION_MAP.get(xd) == region_filter]
+
     # ── KPIs ──────────────────────────────────────────────────────────────────
     st.markdown('<div class="sec-title">📊 Indicadores Clave de Desempeño</div>',
                 unsafe_allow_html=True)
 
-    total_pal  = int(df_clean[pallet_col].sum())
-    total_m2   = round(df_clean["M2"].sum(), 2)
-    total_cap  = sum(CAPACIDADES.values())
-    pct_global = round(total_m2 / total_cap * 100, 1)
+    total_pal  = int(df_view[pallet_col].sum())
+    total_m2   = round(df_view["M2"].sum(), 2)
+    total_cap  = sum(CAPACIDADES[xd] for xd in xdocks_view)
+    pct_global = round(total_m2 / total_cap * 100, 1) if total_cap > 0 else 0
     disponible = round(total_cap - total_m2, 2)
     n_pend     = len(df_pending)
-    n_consol_kpi = len(df_consol)
+    n_consol_kpi = len(df_consol[df_consol[xdock_col].isin(xdocks_view)] if len(df_consol)>0 else df_consol)
 
     kpi_cls = "kpi-red" if pct_global > 90 else "kpi-amber" if pct_global > 70 else "kpi-green"
 
@@ -1276,10 +1969,10 @@ if st.session_state.processed:
     st.markdown('<div class="sec-title">🏭 Ocupación por Crossdock</div>',
                 unsafe_allow_html=True)
     ocp_rows = []
-    for xd in CAPACIDADES:
+    for xd in xdocks_view:
         cap    = CAPACIDADES[xd]
-        m2_ocp = round(df_clean[df_clean[xdock_col] == xd]["M2"].sum(), 2)
-        pal    = int(df_clean[df_clean[xdock_col] == xd][pallet_col].sum())
+        m2_ocp = round(df_view[df_view[xdock_col] == xd]["M2"].sum(), 2)
+        pal    = int(df_view[df_view[xdock_col] == xd][pallet_col].sum())
         pct    = round(m2_ocp / cap * 100, 1) if cap > 0 else 0
         ocp_rows.append({
             "Ciudad":         CIUDAD_MAP.get(xd, xd),
@@ -1372,7 +2065,7 @@ if st.session_state.processed:
         st.info("No hay sitios consolidados en esta carga.")
 
     st.markdown('<div class="sec-title">📈 Dashboard Visual</div>', unsafe_allow_html=True)
-    fig1, fig2, fig3, fig4, fig5, fig6, fig7 = make_charts(df_clean, cols)
+    fig1, fig2, fig3, fig4, fig5, fig6, fig7 = make_charts(df_view, cols)
 
     c1, c2 = st.columns(2)
     with c1: st.plotly_chart(fig1, use_container_width=True)
@@ -1515,19 +2208,62 @@ if st.session_state.processed:
                 unsafe_allow_html=True)
     fecha_str = datetime.date.today().strftime("%Y%m%d")
 
-    d1, d2 = st.columns(2)
+    # PDF generation
+    st.markdown("**📄 Reporte PDF Ejecutivo**")
+    pdf_r1, pdf_r2 = st.columns([3, 2])
+    with pdf_r1:
+        pdf_region = st.selectbox("Región para el PDF", ["Todas", "REGIÓN LUIS", "REGIÓN JORGE"],
+                                   key="pdf_region_select")
+    with pdf_r2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        gen_pdf_btn = st.button("🖨️ Generar PDF Ejecutivo", use_container_width=True)
+
+    if gen_pdf_btn:
+        with st.spinner("Generando reporte PDF..."):
+            try:
+                pdf_buf = generate_pdf(df_clean, df_consol, cols, region_filter=pdf_region)
+                st.session_state.pdf_buf = pdf_buf
+                st.session_state.pdf_region = pdf_region
+                st.success("✅ PDF generado correctamente")
+            except Exception as e:
+                st.error(f"Error generando PDF: {e}")
+                import traceback; st.code(traceback.format_exc())
+
+    if "pdf_buf" in st.session_state:
+        region_label = st.session_state.get("pdf_region", "Todas").replace(" ","_").replace("Ó","O").replace("É","E")
+        st.download_button(
+            label="📥 Descargar PDF Ejecutivo",
+            data=st.session_state.pdf_buf,
+            file_name=f"GASO_REPORTE_EJECUTIVO_{region_label}_{fecha_str}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+
+    st.markdown("---")
+    st.markdown("**📊 Archivos Excel**")
+    d1, d2, d3 = st.columns(3)
     with d1:
         st.download_button(
-            label="📥 Descargar Reporte Completo Excel",
+            label="📥 Reporte Completo Excel",
             data=excel_buf,
             file_name=f"GASO_REPORTE_{fecha_str}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
     with d2:
+        with st.spinner(""):
+            orig_buf = build_original_format_excel(df_clean, df_consol, cols)
+        st.download_button(
+            label="📋 Base Limpia (formato original)",
+            data=orig_buf,
+            file_name=f"GASO_INOUT_LIMPIO_{fecha_str}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+    with d3:
         csv_buf = df_clean.to_csv(index=False).encode("utf-8-sig")
         st.download_button(
-            label="📄 Descargar Base Limpia CSV",
+            label="📄 Base Limpia CSV",
             data=csv_buf,
             file_name=f"GASO_INOUT_LIMPIO_{fecha_str}.csv",
             mime="text/csv",
@@ -1538,7 +2274,7 @@ if st.session_state.processed:
     st.markdown(f"""
     <div style="text-align:center;padding:1.2rem;margin-top:1.5rem;
                 border-top:1px solid #DCE8F5;color:#AAA;font-size:.75rem">
-      GASO COMUNICACIONES · IN-OUT Report Processor v2.0 ·
+      GASO COMUNICACIONES · IN-OUT Report Processor v3.0 ·
       Generado el {datetime.date.today().strftime('%d/%m/%Y')}
     </div>
     """, unsafe_allow_html=True)
