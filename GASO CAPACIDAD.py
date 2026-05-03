@@ -1045,8 +1045,8 @@ def build_excel_output(df_clean, df_consol, pivot_m2, pivot_pal, cols):
     for ri, xd in enumerate(xdocks, 15):
         ciudad = CIUDAD_MAP.get(xd, xd)
         cap    = CAPACIDADES.get(xd, 0)
-        m2_ocp = round(df_view[df_view[xdock_col] == xd]["M2"].sum(), 2)
-        pal    = int(df_view[df_view[xdock_col] == xd][pallet_col].sum())
+        m2_ocp = round(df_clean[df_clean[xdock_col] == xd]["M2"].sum(), 2)
+        pal    = int(df_clean[df_clean[xdock_col] == xd][pallet_col].sum())
         pct    = round(m2_ocp / cap, 4) if cap > 0 else 0
         disp   = round(cap - m2_ocp, 2)
         region = REGION_MAP.get(xd, "")
@@ -1895,7 +1895,7 @@ if st.session_state.processed:
     pivot_pal  = st.session_state.pivot_pal
     logs       = st.session_state.logs
     cols       = st.session_state.cols
-    excel_buf  = st.session_state.excel_buf
+    excel_buf  = st.session_state.get('excel_buf', None)
 
     xdock_col  = cols["xdock"]
     pallet_col = cols["no_pallet"]
@@ -2243,13 +2243,16 @@ if st.session_state.processed:
     st.markdown("**📊 Archivos Excel**")
     d1, d2, d3 = st.columns(3)
     with d1:
-        st.download_button(
-            label="📥 Reporte Completo Excel",
-            data=excel_buf,
-            file_name=f"GASO_REPORTE_{fecha_str}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
+        if excel_buf is None:
+            st.info("Procesa el archivo para habilitar la descarga.")
+        else:
+            st.download_button(
+                label="📥 Reporte Completo Excel",
+                data=excel_buf,
+                file_name=f"GASO_REPORTE_{fecha_str}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
     with d2:
         with st.spinner(""):
             orig_buf = build_original_format_excel(df_clean, df_consol, cols)
