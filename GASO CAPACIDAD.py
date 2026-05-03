@@ -371,17 +371,131 @@ def fix_pallets(df, cols):
     return df
 
 
-def normalize_tipo_pallet(df, cols):
-    def fix(val):
-        if pd.isna(val) or val == "" or val is None:
-            return "ESTANDAR"
-        n = norm(val)
-        for k, v in PALLET_NORM.items():
-            if k in n:
-                return v
+# Reglas para inferir tipo de pallet desde descripcion/clasificacion cuando
+# el campo tipo_pallet está vacío. Orden importa: más específico primero.
+DESC_PALLET_RULES = [
+    # SOBREDIMENSIONADA
+    ("antena gd",          "SOBREDIMENSIONADA"),
+    ("antena grande",      "SOBREDIMENSIONADA"),
+    ("antenas grandes",    "SOBREDIMENSIONADA"),
+    ("galvanizado",        "SOBREDIMENSIONADA"),
+    ("soporte",            "SOBREDIMENSIONADA"),   # cubre soportes, soporte desmontaje, etc.
+    ("obra civil",         "SOBREDIMENSIONADA"),
+    ("civil work",         "SOBREDIMENSIONADA"),
+    ("base metalica",      "SOBREDIMENSIONADA"),
+    ("base metálica",      "SOBREDIMENSIONADA"),
+    ("vallen",             "SOBREDIMENSIONADA"),
+    ("outdoor",            "SOBREDIMENSIONADA"),
+    # EUROPALLET
+    ("dsv",                "EUROPALLET"),          # pallet dsv / 1 pallet dsv / dsv-vallen
+    ("hw sitio completo",  "EUROPALLET"),
+    ("hw",                 "EUROPALLET"),          # HW solo o con tabuladores
+    ("sde",                "EUROPALLET"),
+    # ESTANDAR
+    ("antena md",          "ESTANDAR"),
+    ("antena mediana",     "ESTANDAR"),
+    ("antena ch",          "EUROPALLET"),
+    ("antena chica",       "EUROPALLET"),
+    ("antena",             "ESTANDAR"),            # antena/antenas genérico → ESTANDAR
+    ("gabinete",           "ESTANDAR"),
+    ("complemento",        "ESTANDAR"),
+    ("refurbish",          "ESTANDAR"),
+    ("refaccion",          "ESTANDAR"),
+    ("miscelaneo",         "ESTANDAR"),
+    ("varios",             "ESTANDAR"),
+    ("scrap",              "ESTANDAR"),
+    ("logistica",          "ESTANDAR"),
+    ("caja",               "ESTANDAR"),
+    ("herraje",            "ESTANDAR"),
+    ("sobrante",           "ESTANDAR"),
+    ("cintillo",           "ESTANDAR"),
+    ("bateria",            "ESTANDAR"),
+    ("cable",              "ESTANDAR"),
+    ("indoor",             "ESTANDAR"),
+    ("rru",                "ESTANDAR"),
+]
+
+
+# Jerarquía de tamaño para elegir el tipo más grande cuando hay múltiples matches
+TIPO_RANK = {"ESTANDAR": 1, "EUROPALLET": 2, "SOBREDIMENSIONADA": 3}
+
+
+def _infer_tipo_from_desc(*fields):
+    """
+    Evalúa TODOS los segmentos del texto (separados por tab, coma, pipe, etc.)
+    contra DESC_PALLET_RULES y devuelve el tipo MÁS GRANDE que encuentre.
+    Si no hay ninguna coincidencia → "ESTANDAR" por default.
+    """
+    combined = " | ".join(norm(str(f)) for f in fields if f and str(f) not in ("nan", "none", ""))
+    if not combined.strip():
         return "ESTANDAR"
-    df[cols["tipo_pallet"]] = df[cols["tipo_pallet"]].apply(fix)
+
+    # Split on common separators so each segmento se evalúa por separado
+    import re as _re
+    segments = _re.split(r"[	,|/\n]+", combined)
+
+    best = "ESTANDAR"
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
+            continue
+        for keyword, tipo in DESC_PALLET_RULES:
+            if keyword in seg:
+                if TIPO_RANK.get(tipo, 0) > TIPO_RANK.get(best, 0):
+                    best = tipo
+                break  # una regla por segmento es suficiente
+    return best
+
+
+def normalize_tipo_pallet(df, cols):
+    """
+    1. Si tipo_pallet ya tiene valor reconocido → normalizar con PALLET_NORM.
+    2. Si está vacío → inferir desde descripcion_material y clasificacion,
+       tomando el tipo MÁS GRANDE entre todos los segmentos.
+    3. Si nada coincide → ESTANDAR por default (nunca queda vacío).
+    """
+    desc_col  = cols.get("desc_material")
+    clasi_col = None
+    for c in df.columns:
+        if "clasif" in c:
+            clasi_col = c
+            break
+
+    resultado_inferencia = []
+
+    def fix(row):
+        val = row[cols["tipo_pallet"]]
+        is_empty = pd.isna(val) or str(val).strip() in ("", "None", "nan")
+
+        if not is_empty:
+            n = norm(val)
+            for k, v in PALLET_NORM.items():
+                if k in n:
+                    return v
+            return "ESTANDAR"
+
+        # Empty → infer (always returns a value, never None)
+        desc  = row[desc_col]  if desc_col  and desc_col  in row.index else None
+        clasi = row[clasi_col] if clasi_col and clasi_col in row.index else None
+        inferred = _infer_tipo_from_desc(desc, clasi)
+
+        resultado_inferencia.append({
+            "ID_SITIO":      row.get(cols["id_sitio"], ""),
+            "DESC":          str(desc)[:60],
+            "CLASIF":        str(clasi)[:40],
+            "TIPO_INFERIDO": inferred,
+        })
+        return inferred
+
+    df[cols["tipo_pallet"]] = df.apply(fix, axis=1)
+
+    global _last_tipo_inferences
+    _last_tipo_inferences = resultado_inferencia
+
     return df
+
+
+_last_tipo_inferences = []   # populated by normalize_tipo_pallet
 
 
 def calc_m2(df, cols):
@@ -436,6 +550,12 @@ def run_pipeline(uploaded_file, saved_decisions: dict):
 
     df = fix_pallets(df, cols)
     df = normalize_tipo_pallet(df, cols)
+
+    # Separar filas cuyo tipo_pallet no pudo inferirse → revisión manual de tipo
+    n_inferred = len(_last_tipo_inferences)
+    if n_inferred:
+        logs.append(f"🔎 Tipo Pallet inferido por descripción: {n_inferred} filas")
+
     df = calc_m2(df, cols)
     df = assign_region(df, cols)
 
@@ -799,6 +919,7 @@ def build_excel_output(df_clean, df_consol, pivot_m2, pivot_pal, cols):
         ws5["A5"] = "No hay sitios consolidados en esta carga."
         ws5["A5"].font = Font(name="Calibri", size=10, color="555555")
 
+
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -1080,9 +1201,9 @@ if process_btn:
             pivot_m2  = build_pivot_m2(df_clean, cols)
             pivot_pal = build_pivot_pallets(df_clean, cols)
 
-            st.session_state.df_clean   = df_clean
-            st.session_state.df_consol  = df_consol
-            st.session_state.df_pending = df_pending
+            st.session_state.df_clean      = df_clean
+            st.session_state.df_consol     = df_consol
+            st.session_state.df_pending    = df_pending
             st.session_state.pivot_m2   = pivot_m2
             st.session_state.pivot_pal  = pivot_pal
             st.session_state.logs       = logs
@@ -1100,9 +1221,9 @@ if process_btn:
 
 # ── Results ───────────────────────────────────────────────────────────────────
 if st.session_state.processed:
-    df_clean   = st.session_state.df_clean
-    df_consol  = st.session_state.df_consol
-    df_pending = st.session_state.df_pending
+    df_clean      = st.session_state.df_clean
+    df_consol     = st.session_state.df_consol
+    df_pending    = st.session_state.df_pending
     pivot_m2   = st.session_state.pivot_m2
     pivot_pal  = st.session_state.pivot_pal
     logs       = st.session_state.logs
