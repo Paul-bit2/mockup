@@ -1895,7 +1895,13 @@ if st.session_state.processed:
     pivot_pal  = st.session_state.pivot_pal
     logs       = st.session_state.logs
     cols       = st.session_state.cols
-    excel_buf  = st.session_state.get('excel_buf', None)
+    # Always ensure excel_buf exists — regenerate if the previous run failed
+    if 'excel_buf' not in st.session_state or st.session_state.excel_buf is None:
+        with st.spinner("Generando reporte Excel..."):
+            _pm2  = build_pivot_m2(df_clean, cols)
+            _ppal = build_pivot_pallets(df_clean, cols)
+            st.session_state.excel_buf = build_excel_output(df_clean, df_consol, _pm2, _ppal, cols)
+    excel_buf = st.session_state.excel_buf
 
     xdock_col  = cols["xdock"]
     pallet_col = cols["no_pallet"]
@@ -2243,16 +2249,13 @@ if st.session_state.processed:
     st.markdown("**📊 Archivos Excel**")
     d1, d2, d3 = st.columns(3)
     with d1:
-        if excel_buf is None:
-            st.info("Procesa el archivo para habilitar la descarga.")
-        else:
-            st.download_button(
-                label="📥 Reporte Completo Excel",
-                data=excel_buf,
-                file_name=f"GASO_REPORTE_{fecha_str}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-            )
+        st.download_button(
+            label="📥 Reporte Completo Excel",
+            data=excel_buf,
+            file_name=f"GASO_REPORTE_{fecha_str}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
     with d2:
         with st.spinner(""):
             orig_buf = build_original_format_excel(df_clean, df_consol, cols)
