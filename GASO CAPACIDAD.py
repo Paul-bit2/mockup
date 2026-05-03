@@ -569,6 +569,13 @@ def run_pipeline(uploaded_file, saved_decisions: dict):
     df = calc_m2(df, cols)
     df = assign_region(df, cols)
 
+    # Rellenar tipo_material vacío con SIN CLASIFICAR
+    mat_col = cols["tipo_material"]
+    df[mat_col] = df[mat_col].fillna("SIN CLASIFICAR")
+    df[mat_col] = df[mat_col].apply(
+        lambda x: "SIN CLASIFICAR" if str(x).strip() in ("", "None", "nan") else x
+    )
+
     # Enriquecer consolidados (sin M2 ni conteo de pallet)
     df_consol = normalize_tipo_pallet(df_consol, cols)
     df_consol["REGION"] = df_consol[cols["xdock"]].map(REGION_MAP).fillna("SIN REGION")
@@ -887,6 +894,8 @@ def build_excel_output(df_clean, df_consol, cols, region_filter="Todas"):
         exec_cols.append(f"{car}\nTotal Pallets")
         exec_cols.append(f"{car}\nM² Ocupados")
     exec_cols += ["TOTAL\nPALLETS", "TOTAL M²\nOCUPADOS", "% OCUPACIÓN", "DISPONIBLE M²", "STATUS"]
+    for car in carriers:
+        exec_cols.append(f"% M²\n{car}\ndel Total")
 
     HDR_ROW = 5
     _title_block(ws2, "REPORTE SEMANAL DE OCUPACIÓN – CLIENTE",
@@ -901,6 +910,13 @@ def build_excel_output(df_clean, df_consol, cols, region_filter="Todas"):
     ws2.column_dimensions["A"].width = 14
     ws2.column_dimensions["B"].width = 14
     ws2.column_dimensions["C"].width = 12
+    # Wider columns for % carrier cols and set a distinguishing fill
+    for car_i in range(len(carriers)):
+        car_ci = len(exec_cols) - len(carriers) + car_i + 1
+        ws2.column_dimensions[get_column_letter(car_ci)].width = 14
+        c_h = ws2.cell(row=HDR_ROW, column=car_ci)
+        c_h.fill = PatternFill("solid", fgColor="2E6DB4")   # accent blue
+        c_h.font = Font(name="Calibri", bold=True, color=HEX_WHITE, size=9)
 
     total_pal_all = 0
     total_m2_all  = 0.0
@@ -930,6 +946,11 @@ def build_excel_output(df_clean, df_consol, cols, region_filter="Todas"):
         status = ("SATURADO" if pct > 1.0 else "CRÍTICO" if pct > 0.90
                   else "ALERTA" if pct > 0.70 else "NORMAL")
         row_vals += [tot_pal, tot_m2, pct, disp, status]
+        # % M² por carrier vs total M² ocupados del crossdock (AT&T + Telcel = 100%)
+        # Solo supera 100% si el total de M² excede la capacidad del crossdock
+        for car in carriers:
+            car_m2 = df_rep[(df_rep[xdock_col] == xd) & (df_rep[carrier_col] == car)]["M2"].sum()
+            row_vals.append(round(car_m2 / tot_m2, 4) if tot_m2 > 0 else 0)
 
         total_pal_all += tot_pal
         total_m2_all  += tot_m2
@@ -942,14 +963,23 @@ def build_excel_output(df_clean, df_consol, cols, region_filter="Todas"):
             c.border = BORDER; c.font = DATA_FONT
             c.fill   = _alt_fill(ri); c.alignment = CTR
 
-        # Color % ocupación
+        # Color % ocupación total
         n_cols_total = len(exec_cols)
-        pct_ci = n_cols_total - 2   # 1-based
+        pct_ci = n_cols_total - 2 - len(carriers)   # before the carrier % cols
         c_pct  = ws2.cell(row=er, column=pct_ci)
         c_pct.number_format = "0.00%"
         c_pct.fill = _pct_fill(pct)
         c_pct.font = Font(name="Calibri", bold=True, color=HEX_WHITE, size=9)
         c_pct.alignment = CTR
+        # Color % M² por carrier (light blue header fill, value formatted as %)
+        for car_i in range(len(carriers)):
+            car_pct_ci = n_cols_total - len(carriers) + car_i + 1
+            c_cp = ws2.cell(row=er, column=car_pct_ci)
+            c_cp.number_format = "0.00%"
+            c_cp.font = Font(name="Calibri", bold=True, size=9,
+                             color=HEX_WHITE if float(c_cp.value or 0) > 0 else "AAAAAA")
+            c_cp.fill = PatternFill("solid", fgColor="2E6DB4")  # GASO_LIGHT blue
+            c_cp.alignment = CTR
 
     # Totals row
     tr = HDR_ROW + 1 + len(xdocks_rep)
