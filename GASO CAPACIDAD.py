@@ -421,13 +421,35 @@ def run_pipeline(uploaded_file, saved_decisions: dict):
     df, rem_fin = final_ens_filter(df, cols)
     logs.append(f"🗑️  Filtro final E-NS: {len(rem_fin)} eliminados | Activos: {len(df):,}")
 
+    # Separar consolidados (NO. PALLET = 0) ANTES de fix_pallets
+    # Son material pequeno encima de otra tarima: no impacta capacidad
+    def _is_zero(val):
+        try:
+            return float(val) == 0
+        except (TypeError, ValueError):
+            return False
+
+    mask_consol = df[cols["no_pallet"]].apply(_is_zero)
+    df_consol   = df[mask_consol].copy()
+    df          = df[~mask_consol].copy()
+    logs.append(f"📌 Sitios consolidados (pallet=0): {len(df_consol)} | Para capacidad: {len(df):,}")
+
     df = fix_pallets(df, cols)
     df = normalize_tipo_pallet(df, cols)
     df = calc_m2(df, cols)
     df = assign_region(df, cols)
-    logs.append(f"📦 Pallets: {int(df[cols['no_pallet']].sum()):,} | M²: {df['M2'].sum():,.2f}")
 
-    return df, df_pending, logs, cols
+    # Enriquecer consolidados (sin M2 ni conteo de pallet)
+    df_consol = normalize_tipo_pallet(df_consol, cols)
+    df_consol["REGION"] = df_consol[cols["xdock"]].map(REGION_MAP).fillna("SIN REGION")
+    df_consol["CIUDAD"] = df_consol[cols["xdock"]].map(CIUDAD_MAP).fillna("")
+    df_consol["M2"]     = 0.0
+    df["CONSOLIDADO"]       = False
+    df_consol["CONSOLIDADO"] = True
+
+    logs.append(f"📦 Pallets activos: {int(df[cols['no_pallet']].sum()):,} | M²: {df['M2'].sum():,.2f} | Consolidados: {len(df_consol)}")
+
+    return df, df_consol, df_pending, logs, cols
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -542,7 +564,7 @@ def _write_table(ws, df, start_row, freeze=True):
         ws.freeze_panes = ws.cell(row=start_row + 1, column=1)
 
 
-def build_excel_output(df_clean, pivot_m2, pivot_pal, cols):
+def build_excel_output(df_clean, df_consol, pivot_m2, pivot_pal, cols):
     wb   = openpyxl.Workbook()
     fecha = datetime.date.today().strftime("%d/%m/%Y")
 
@@ -744,6 +766,38 @@ def build_excel_output(df_clean, pivot_m2, pivot_pal, cols):
         c_pct.number_format = "0.00%"
         c_pct.fill = _pct_fill(pct)
         c_pct.font = Font(name="Calibri", bold=True, color=HEX_WHITE, size=9)
+
+
+    # ── 5. SITIOS CONSOLIDADOS ───────────────────────────────────────────────
+    ws5 = wb.create_sheet("SITIOS CONSOLIDADOS")
+    _title_block(ws5, "SITIOS CONSOLIDADOS",
+                 "Material consolidado sobre otra tarima – no impacta en capacidad ni M²", fecha,
+                 n_cols=min(20, len(df_consol.columns) if len(df_consol) > 0 else 8))
+    if len(df_consol) > 0:
+        # Drop helper column before export
+        consol_export = df_consol.drop(columns=["CONSOLIDADO"], errors="ignore").reset_index(drop=True)
+        _write_table(ws5, consol_export, start_row=5)
+        # Summary by XDOCK
+        sum_row = 5 + len(consol_export) + 3
+        ws5.cell(row=sum_row, column=1, value="RESUMEN POR CROSSDOCK").font =             Font(name="Calibri", bold=True, size=10, color=HEX_BLUE)
+        sum_hdr = ["CIUDAD", "XDOCK", "CARRIER", "SITIOS CONSOLIDADOS"]
+        for ci, h in enumerate(sum_hdr, 1):
+            c = ws5.cell(row=sum_row + 1, column=ci, value=h)
+            c.font = HDR_FONT; c.fill = HDR_FILL; c.border = BORDER; c.alignment = CTR
+            ws5.column_dimensions[get_column_letter(ci)].width = 22
+        grp_c = (df_consol.groupby([cols["xdock"], cols["carrier"]])
+                 .size().reset_index(name="SITIOS"))
+        for ri2, row2 in grp_c.iterrows():
+            er2 = sum_row + 2 + ri2
+            vals = [CIUDAD_MAP.get(row2[cols["xdock"]], row2[cols["xdock"]]),
+                    row2[cols["xdock"]], row2[cols["carrier"]], row2["SITIOS"]]
+            for ci, v in enumerate(vals, 1):
+                c = ws5.cell(row=er2, column=ci, value=v)
+                c.fill = _alt_fill(ri2); c.border = BORDER
+                c.font = DATA_FONT; c.alignment = CTR
+    else:
+        ws5["A5"] = "No hay sitios consolidados en esta carga."
+        ws5["A5"].font = Font(name="Calibri", size=10, color="555555")
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -1021,12 +1075,13 @@ if process_btn:
     with st.spinner("⚙️ Procesando base de datos..."):
         try:
             saved_dec = load_decisions()
-            df_clean, df_pending, logs, cols = run_pipeline(uploaded, saved_dec)
+            df_clean, df_consol, df_pending, logs, cols = run_pipeline(uploaded, saved_dec)
 
             pivot_m2  = build_pivot_m2(df_clean, cols)
             pivot_pal = build_pivot_pallets(df_clean, cols)
 
             st.session_state.df_clean   = df_clean
+            st.session_state.df_consol  = df_consol
             st.session_state.df_pending = df_pending
             st.session_state.pivot_m2   = pivot_m2
             st.session_state.pivot_pal  = pivot_pal
@@ -1036,7 +1091,7 @@ if process_btn:
 
             # Pre-build Excel
             uploaded.seek(0)
-            excel_buf = build_excel_output(df_clean, pivot_m2, pivot_pal, cols)
+            excel_buf = build_excel_output(df_clean, df_consol, pivot_m2, pivot_pal, cols)
             st.session_state.excel_buf = excel_buf
 
         except Exception as e:
@@ -1046,6 +1101,7 @@ if process_btn:
 # ── Results ───────────────────────────────────────────────────────────────────
 if st.session_state.processed:
     df_clean   = st.session_state.df_clean
+    df_consol  = st.session_state.df_consol
     df_pending = st.session_state.df_pending
     pivot_m2   = st.session_state.pivot_m2
     pivot_pal  = st.session_state.pivot_pal
@@ -1071,17 +1127,19 @@ if st.session_state.processed:
     pct_global = round(total_m2 / total_cap * 100, 1)
     disponible = round(total_cap - total_m2, 2)
     n_pend     = len(df_pending)
+    n_consol_kpi = len(df_consol)
 
     kpi_cls = "kpi-red" if pct_global > 90 else "kpi-amber" if pct_global > 70 else "kpi-green"
 
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
     kpis_ui = [
-        (k1, "Total Pallets",       f"{total_pal:,}",      "unidades",  "kpi-card"),
-        (k2, "M² Ocupados",         f"{total_m2:,.1f}",    "m²",        "kpi-card"),
-        (k3, "Capacidad Total",     f"{total_cap:,}",      "m²",        "kpi-card"),
-        (k4, "% Ocupación Global",  f"{pct_global}%",      "",          f"kpi-card {kpi_cls}"),
-        (k5, "M² Disponibles",      f"{disponible:,.1f}",  "m²",        "kpi-card"),
-        (k6, "Pendientes Revisión", f"{n_pend}",            "registros",
+        (k1, "Total Pallets",         f"{total_pal:,}",        "unidades",  "kpi-card"),
+        (k2, "M² Ocupados",           f"{total_m2:,.1f}",      "m²",        "kpi-card"),
+        (k3, "Capacidad Total",       f"{total_cap:,}",        "m²",        "kpi-card"),
+        (k4, "% Ocupación Global",    f"{pct_global}%",        "",          f"kpi-card {kpi_cls}"),
+        (k5, "M² Disponibles",        f"{disponible:,.1f}",    "m²",        "kpi-card"),
+        (k6, "Sitios Consolidados",   f"{n_consol_kpi}",       "registros", "kpi-card" ),
+        (k7, "Pendientes Revisión",   f"{n_pend}",             "registros",
          "kpi-card kpi-red" if n_pend > 0 else "kpi-card kpi-green"),
     ]
     for col_w, label, val, unit, cls in kpis_ui:
@@ -1142,6 +1200,56 @@ if st.session_state.processed:
     )
 
     # ── Charts ────────────────────────────────────────────────────────────────
+    # ── Sitios Consolidados ───────────────────────────────────────────────────
+    n_consol = len(df_consol)
+    st.markdown('<div class="sec-title">📌 Sitios Consolidados</div>', unsafe_allow_html=True)
+    if n_consol > 0:
+        xd_col = cols["xdock"]
+        car_col = cols["carrier"]
+        # Summary cards row
+        consol_by_xd = df_consol.groupby(xd_col).size().reset_index(name="n")
+        consol_by_car = df_consol.groupby(car_col).size().reset_index(name="n")
+        ca, cb, cc = st.columns(3)
+        with ca:
+            st.markdown(f'''
+            <div class="kpi-card" style="border-left-color:#8E44AD">
+              <div class="kpi-label">Total Sitios Consolidados</div>
+              <div class="kpi-value" style="color:#8E44AD">{n_consol}</div>
+              <div class="kpi-unit">registros · sin impacto en capacidad</div>
+            </div>''', unsafe_allow_html=True)
+        with cb:
+            top_xd = CIUDAD_MAP.get(consol_by_xd.sort_values("n", ascending=False).iloc[0][xd_col], "—") if len(consol_by_xd) > 0 else "—"
+            top_n  = int(consol_by_xd["n"].max()) if len(consol_by_xd) > 0 else 0
+            st.markdown(f'''
+            <div class="kpi-card" style="border-left-color:#8E44AD">
+              <div class="kpi-label">Crossdock con más consolidados</div>
+              <div class="kpi-value" style="color:#8E44AD;font-size:1.3rem">{top_xd}</div>
+              <div class="kpi-unit">{top_n} sitios</div>
+            </div>''', unsafe_allow_html=True)
+        with cc:
+            carriers_c = ", ".join(sorted(df_consol[car_col].dropna().unique()))
+            st.markdown(f'''
+            <div class="kpi-card" style="border-left-color:#8E44AD">
+              <div class="kpi-label">Carriers con consolidados</div>
+              <div class="kpi-value" style="color:#8E44AD;font-size:1.1rem">{carriers_c}</div>
+              <div class="kpi-unit">&nbsp;</div>
+            </div>''', unsafe_allow_html=True)
+
+        st.caption("Estos registros tienen **No. de Pallet = 0** — son materiales pequeños consolidados sobre otra tarima. "
+                   "No se contabilizan en pallets ni en M² de capacidad.")
+
+        # Summary table by XDOCK × Carrier
+        grp_c = (df_consol.groupby([xd_col, car_col])
+                 .agg(Sitios=(cols["id_sitio"], "count"),
+                      ID_Sitios=(cols["id_sitio"], lambda x: ", ".join(x.dropna().unique()[:5])))
+                 .reset_index())
+        grp_c["Ciudad"] = grp_c[xd_col].map(CIUDAD_MAP)
+        grp_c = grp_c[['Ciudad', xd_col, car_col, 'Sitios', 'ID_Sitios']]
+        grp_c.columns = ['Ciudad', 'XDOCK', 'Carrier', 'Sitios Consolidados', 'ID Sitios (muestra)']
+        st.dataframe(grp_c, use_container_width=True, height=min(200 + len(grp_c)*35, 380))
+    else:
+        st.info("No hay sitios consolidados en esta carga.")
+
     st.markdown('<div class="sec-title">📈 Dashboard Visual</div>', unsafe_allow_html=True)
     fig1, fig2, fig3, fig4, fig5, fig6, fig7 = make_charts(df_clean, cols)
 
