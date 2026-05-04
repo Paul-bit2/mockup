@@ -1485,76 +1485,118 @@ def generate_pdf(df_clean, df_consol, cols, region_filter="Todas"):
     story.append(Paragraph("2. Análisis de M² y Tipo de Material", S_H1))
     story.append(_hr())
 
-    # Stacked M2 chart
-    fig_m2 = go.Figure([
-        go.Bar(x=df_ocp["Ciudad"], y=df_ocp["M2_ocp"], name="M² Ocupados",
-               marker_color=GASO_LIGHT),
-        go.Bar(x=df_ocp["Ciudad"], y=df_ocp["disp"], name="Disponible",
-               marker_color="#D5E8F5"),
-    ])
+    # ── M² por crossdock: grouped bars M² ocupados vs capacidad ─────────────
+    # Using df_ocp already computed from df_plot (clean data only, no consolidados)
+    # Sort by % ocupacion descending so most critical crossdocks appear first
+    df_ocp_sorted = df_ocp.sort_values("pct", ascending=False)
+
+    fig_m2 = go.Figure()
+    fig_m2.add_trace(go.Bar(
+        x=df_ocp_sorted["Ciudad"], y=df_ocp_sorted["M2_ocp"],
+        name="M² Ocupados", marker_color=GASO_LIGHT,
+        text=[f"{v:.0f}" for v in df_ocp_sorted["M2_ocp"]],
+        textposition="outside",
+    ))
+    fig_m2.add_trace(go.Bar(
+        x=df_ocp_sorted["Ciudad"], y=df_ocp_sorted["cap"],
+        name="Capacidad Total", marker_color="#D5E8F5",
+        text=[f"{v:.0f}" for v in df_ocp_sorted["cap"]],
+        textposition="outside",
+    ))
     fig_m2.update_layout(
-        barmode="stack", title="", xaxis_title="", yaxis_title="m²",
+        barmode="group", title="", xaxis_title="", yaxis_title="m²",
         plot_bgcolor="white", paper_bgcolor="white",
-        height=300, margin=dict(l=10,r=10,t=10,b=60),
+        height=320, margin=dict(l=10, r=10, t=20, b=70),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         font=dict(family="Helvetica", color="#1A3A6B"),
+        xaxis=dict(tickangle=-25),
     )
-    story.append(_fig_to_image(fig_m2, 16, 6.5))
-    story.append(Paragraph(
-        f"La capacidad total de la región es de <b>{cap_region:,} m²</b>. "
-        f"Actualmente se utilizan <b>{total_m2:,.0f} m²</b>, dejando <b>{disponible:,.0f} m²</b> disponibles "
-        f"({round(100-pct_global,1)}% de holgura operativa).",
-        S_BODY))
+    story.append(_fig_to_image(fig_m2, 17, 7))
+
+    # Contextual paragraph based on actual numbers
+    saturados = [r["Ciudad"] for _, r in df_ocp_sorted.iterrows() if r["pct"] > 100]
+    en_alerta  = [r["Ciudad"] for _, r in df_ocp_sorted.iterrows() if 70 < r["pct"] <= 100]
+    m2_txt = (
+        f"La capacidad total de la región es <b>{cap_region:,} m²</b> y "
+        f"actualmente se utilizan <b>{total_m2:,.0f} m²</b> ({pct_global}% de ocupación). "
+    )
+    if saturados:
+        m2_txt += (f"<b>{', '.join(saturados)}</b> superan su capacidad — "
+                   "se requiere revisión y despacho prioritario. ")
+    if en_alerta:
+        m2_txt += f"<b>{', '.join(en_alerta)}</b> operan en zona de alerta."
+    story.append(Paragraph(m2_txt, S_BODY))
     story.append(_spacer(0.3))
 
-    # Material pie + heatmap side by side
-    mat_grp = df_plot.groupby(mat_col)[pallet_col].sum().reset_index()
-    mat_grp.columns = ["Tipo", "Pallets"]
-    fig_pie = px.pie(mat_grp, names="Tipo", values="Pallets", hole=0.42,
-                     color_discrete_sequence=[GASO_BLUE, GASO_ACCENT, "#E67E22", "#8E44AD", "#1E8449"])
-    fig_pie.update_traces(textinfo="percent+label")
-    fig_pie.update_layout(plot_bgcolor="white", paper_bgcolor="white",
-                          showlegend=False, height=280,
-                          margin=dict(l=10,r=10,t=10,b=10),
-                          font=dict(family="Helvetica", color="#1A3A6B"))
+    # ── Pie: distribución de M² por tipo de material (no pallets) ─────────
+    # Using M² so the pie reflects actual space consumption, not unit count
+    mat_m2 = df_plot.groupby(mat_col)["M2"].sum().reset_index()
+    mat_m2.columns = ["Tipo", "M2"]
+    mat_m2 = mat_m2[mat_m2["M2"] > 0].sort_values("M2", ascending=False)
 
-    # Heatmap — full width, tall enough to show all city labels clearly
+    fig_pie = px.pie(
+        mat_m2, names="Tipo", values="M2", hole=0.42,
+        color_discrete_sequence=[GASO_BLUE, GASO_ACCENT, "#E67E22",
+                                  "#8E44AD", "#1E8449", "#C0392B", "#F39C12"],
+    )
+    fig_pie.update_traces(
+        textinfo="percent+label",
+        textfont=dict(size=9),
+        hovertemplate="<b>%{label}</b><br>%{value:.0f} m²<br>%{percent}<extra></extra>",
+    )
+    fig_pie.update_layout(
+        plot_bgcolor="white", paper_bgcolor="white",
+        showlegend=False, height=300,
+        margin=dict(l=20, r=20, t=10, b=10),
+        font=dict(family="Helvetica", color="#1A3A6B"),
+    )
+
+    # ── Heatmap: M² por crossdock × tipo de material ─────────────────────
     heat = df_plot.groupby([xdock_col, mat_col])["M2"].sum().reset_index()
     hp   = heat.pivot(index=xdock_col, columns=mat_col, values="M2").fillna(0)
-    # Sort by total M2 descending so most occupied crossdocks appear first
+    # Sort rows by total M2 descending (most occupied first)
     hp["_total"] = hp.sum(axis=1)
     hp = hp.sort_values("_total", ascending=False).drop(columns=["_total"])
+    # Map xdock codes to city names on the Y axis
     hp.index = [CIUDAD_MAP.get(x, x) for x in hp.index]
     n_rows = len(hp)
 
     fig_heat = px.imshow(
-        hp.round(1), text_auto=".0f", aspect="auto",
-        color_continuous_scale=[[0,"#EBF5FB"],[0.4,GASO_ACCENT],[1,GASO_BLUE]],
+        hp.round(0), text_auto=".0f", aspect="auto",
+        color_continuous_scale=[[0, "#EBF5FB"], [0.35, GASO_ACCENT], [1, GASO_BLUE]],
+        labels=dict(x="Tipo de Material", y="Ciudad", color="M²"),
     )
     fig_heat.update_layout(
         plot_bgcolor="white", paper_bgcolor="white",
-        height=max(280, n_rows * 42),        # ~42px per city row
-        margin=dict(l=90, r=20, t=30, b=60), # generous left margin for city names
+        height=max(300, n_rows * 48),
+        margin=dict(l=100, r=20, t=30, b=80),
         font=dict(family="Helvetica", size=10, color="#1A3A6B"),
         coloraxis_showscale=False,
-        xaxis=dict(side="bottom", tickangle=-30, tickfont=dict(size=9)),
-        yaxis=dict(tickfont=dict(size=10)),
+        xaxis=dict(side="bottom", tickangle=-35, tickfont=dict(size=9),
+                   title="", automargin=True),
+        yaxis=dict(tickfont=dict(size=10), title="", automargin=True),
     )
-    fig_heat.update_traces(textfont=dict(size=9, color="white"))
+    fig_heat.update_traces(
+        textfont=dict(size=9),
+        # White text on dark cells, dark on light
+        texttemplate="%{z:.0f}",
+    )
 
-    story.append(Paragraph("Distribución por Tipo de Material", S_H2))
-    # Pie chart — full width centered
-    story.append(_fig_to_image(fig_pie, 10, 5.5))
+    story.append(Paragraph("Distribución de M² por Tipo de Material", S_H2))
+    story.append(_fig_to_image(fig_pie, 11, 6))
     story.append(_spacer(0.3))
-    # Heatmap — full width, height proportional to number of crossdocks
-    heat_h_cm = max(5.5, n_rows * 0.9)
+    story.append(Paragraph("M² por Crossdock y Tipo de Material", S_H2))
+    heat_h_cm = max(6, n_rows * 1.0)
     story.append(_fig_to_image(fig_heat, 17, heat_h_cm))
 
-    top_mat = mat_grp.sort_values("Pallets", ascending=False).iloc[0]["Tipo"] if len(mat_grp) else "N/A"
+    top_mat = mat_m2.iloc[0]["Tipo"] if len(mat_m2) else "N/A"
+    top_m2  = mat_m2.iloc[0]["M2"] if len(mat_m2) else 0
+    top_pct = round(top_m2 / total_m2 * 100, 1) if total_m2 > 0 else 0
     story.append(Paragraph(
-        f"El tipo de material predominante es <b>{top_mat}</b>. "
-        "El mapa de calor muestra los m² que ocupa cada tipo de material por crossdock — "
-        "útil para identificar qué ciudades concentran material de mayor huella.",
+        f"El tipo de material con mayor consumo de espacio es <b>{top_mat}</b> "
+        f"con <b>{top_m2:,.0f} m²</b> ({top_pct}% del total ocupado). "
+        "El mapa muestra qué tipos de material concentran más espacio en cada crossdock, "
+        "lo que permite priorizar despachos por tipo.",
         S_BODY))
 
     story.append(PageBreak())
