@@ -1112,39 +1112,74 @@ def build_excel_output(df_clean, df_consol, cols, region_filter="Todas"):
 #  PLOTLY CHARTS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _smart_analysis(xd, pct, total_pal, m2_ocp, cap, tipo_dist):
-    """Generate an intelligent 2-3 sentence analysis for a crossdock."""
-    ciudad = CIUDAD_MAP.get(xd, xd)
-    pct100 = round(pct * 100, 1)
+def _smart_analysis(xd, pct, total_pal, m2_ocp, cap, tipo_dist, carrier_dist=None):
+    """
+    Generate a contextual 2-3 sentence analysis for a crossdock.
+    Varies by occupancy level, material mix, and carrier concentration.
+    Never mentions internal calculation factors.
+    """
+    ciudad  = CIUDAD_MAP.get(xd, xd)
+    pct100  = round(pct * 100, 1)
+    disp    = round(cap - m2_ocp, 0)
 
-    if pct > 1.0:
-        main = (f"{ciudad} opera al {pct100}% de su capacidad, superando el límite de {cap} m². "
-                f"Con {total_pal} pallets y {m2_ocp:.0f} m² ocupados se requiere acción inmediata: "
-                f"revisar si existen capturas duplicadas o coordinar salidas urgentes.")
+    # ── Main sentence by occupancy level ────────────────────────────────────
+    if pct > 1.20:
+        main = (f"{ciudad} registra una saturación severa del {pct100}%, con {m2_ocp:.0f} m² "
+                f"ocupados sobre una capacidad de {cap} m². Esta situación requiere revisión "
+                f"inmediata del inventario: es probable que existan registros sin salida capturada "
+                f"o material acumulado sin programa de despacho definido.")
+    elif pct > 1.0:
+        main = (f"{ciudad} supera su capacidad operativa con un {pct100}% de ocupación "
+                f"({m2_ocp:.0f} m² vs {cap} m² disponibles). Se deben coordinar salidas "
+                f"prioritarias y suspender nuevas recepciones hasta liberar espacio.")
     elif pct > 0.90:
-        main = (f"{ciudad} registra una ocupación crítica del {pct100}% ({m2_ocp:.0f}/{cap} m²). "
-                f"Queda menos del 10% de capacidad disponible — se recomienda programar salidas "
-                f"antes de recibir nuevas entradas.")
+        main = (f"{ciudad} opera en nivel crítico con {pct100}% de ocupación y solo "
+                f"{disp:.0f} m² libres. Con este margen, cualquier entrada adicional "
+                f"podría saturar el crossdock. Se recomienda programar salidas esta semana.")
     elif pct > 0.70:
-        main = (f"{ciudad} está en zona de alerta con {pct100}% de ocupación ({m2_ocp:.0f}/{cap} m²). "
-                f"El crossdock puede absorber entregas moderadas pero debe monitorearse semanalmente.")
-    elif pct > 0.30:
-        main = (f"{ciudad} opera a un nivel saludable del {pct100}% ({m2_ocp:.0f}/{cap} m²), "
-                f"con {round(cap-m2_ocp,0):.0f} m² disponibles para nuevas entradas.")
+        main = (f"{ciudad} se encuentra en zona de alerta con {pct100}% de ocupación "
+                f"({m2_ocp:.0f}/{cap} m²). Tiene capacidad para absorber entregas menores, "
+                f"pero se recomienda monitoreo diario y priorizar despachos pendientes.")
+    elif pct > 0.40:
+        main = (f"{ciudad} opera en niveles normales con {pct100}% de ocupación "
+                f"({m2_ocp:.0f} m² ocupados, {disp:.0f} m² disponibles). "
+                f"El crossdock tiene capacidad suficiente para recibir nuevas entregas sin restricción.")
+    elif total_pal == 0:
+        main = (f"{ciudad} no registra inventario activo en este corte. "
+                f"Se recomienda verificar si hay entradas pendientes de captura "
+                f"o si el crossdock se encuentra en periodo de baja operativa.")
     else:
-        if total_pal == 0:
-            main = (f"{ciudad} no registra inventario activo en este periodo. "
-                    f"Verificar si el crossdock está operativo o si existen capturas pendientes.")
-        else:
-            main = (f"{ciudad} presenta ocupación baja del {pct100}% ({total_pal} pallets). "
-                    f"Capacidad ampliamente disponible ({round(cap-m2_ocp,0):.0f} m² libres).")
+        main = (f"{ciudad} tiene una ocupación baja del {pct100}% con {total_pal} pallets activos. "
+                f"Cuenta con {disp:.0f} m² disponibles, lo que le da amplia holgura "
+                f"para recibir material en las próximas semanas.")
 
-    # Tipo de material note
-    if tipo_dist:
-        top_tipo = max(tipo_dist, key=tipo_dist.get)
-        main += f" El tipo de pallet predominante es {top_tipo}."
+    # ── Secondary insight: material mix ─────────────────────────────────────
+    insight = ""
+    if tipo_dist and total_pal > 0:
+        sorted_tipos = sorted(tipo_dist.items(), key=lambda x: x[1], reverse=True)
+        top_tipo, top_val = sorted_tipos[0]
+        top_pct = round(top_val / total_pal * 100)
+        if top_tipo == "SOBREDIMENSIONADA" and top_pct > 50:
+            insight = (f" El {top_pct}% del inventario corresponde a material sobredimensionado, "
+                       f"lo que explica el alto consumo de m² en relación al número de pallets.")
+        elif top_tipo == "EUROPALLET" and top_pct > 50:
+            insight = (f" Predomina material tipo Europallet ({top_pct}% del total), "
+                       f"con una huella de espacio moderada por unidad.")
+        elif top_tipo != "ESTANDAR" and top_pct > 60:
+            insight = (f" El tipo de material predominante es {top_tipo} con {top_pct}% del inventario.")
 
-    return main
+    # ── Tertiary insight: carrier concentration ──────────────────────────────
+    carrier_note = ""
+    if carrier_dist and total_pal > 0:
+        top_car  = max(carrier_dist, key=carrier_dist.get)
+        top_c_pct = round(carrier_dist[top_car] / total_pal * 100)
+        if top_c_pct >= 90:
+            carrier_note = (f" El inventario es prácticamente exclusivo de {top_car} "
+                            f"({top_c_pct}% de los pallets).")
+        elif top_c_pct >= 70:
+            carrier_note = f" {top_car} concentra el {top_c_pct}% del inventario en este crossdock."
+
+    return main + insight + carrier_note
 
 
 def generate_pdf(df_clean, df_consol, cols, region_filter="Todas"):
@@ -1229,48 +1264,13 @@ def generate_pdf(df_clean, df_consol, cols, region_filter="Todas"):
 
     story = []
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # COVER PAGE
-    # ══════════════════════════════════════════════════════════════════════════
-    # Blue cover rectangle via a 1-cell table
+    # Pre-compute KPIs used on cover and throughout
     region_label = region_filter if region_filter != "Todas" else "Todas las Regiones"
-    cover_data = [[Paragraph("GASO COMUNICACIONES", S_COVER_TITLE)],
-                  [Paragraph("Reporte Ejecutivo de Ocupación de Inventario", S_COVER_SUB)],
-                  [Paragraph(f"Región: {region_label}", S_COVER_SUB)],
-                  [Paragraph(fecha_str, S_COVER_DATE)]]
-    cover_tbl = Table(cover_data, colWidths=[17*cm])
-    cover_tbl.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,-1), RL_BLUE),
-        ("TOPPADDING",    (0,0), (-1,0),  60),
-        ("BOTTOMPADDING", (0,-1),(-1,-1), 60),
-        ("LEFTPADDING",   (0,0), (-1,-1), 20),
-        ("RIGHTPADDING",  (0,0), (-1,-1), 20),
-        ("ROWBACKGROUNDS",(0,0), (-1,-1), [RL_BLUE]),
-    ]))
-
-    # Logo if available
-    if os.path.exists(LOGO_PATH):
-        try:
-            logo = RLImage(LOGO_PATH, width=4*cm, height=2*cm)
-            logo.hAlign = "CENTER"
-            story.append(_spacer(1))
-            story.append(logo)
-            story.append(_spacer(0.5))
-        except Exception:
-            story.append(_spacer(3))
-    else:
-        story.append(_spacer(5))
-
-    story.append(cover_tbl)
-    story.append(_spacer(1))
-
-    # KPI summary boxes on cover
     total_pal  = int(df_plot[pallet_col].sum())
     total_m2   = round(df_plot["M2"].sum(), 2)
     cap_region = sum(CAPACIDADES[xd] for xd in xdocks_plot)
     pct_global = round(total_m2 / cap_region * 100, 1) if cap_region > 0 else 0
     disponible = round(cap_region - total_m2, 2)
-    n_consol   = len(df_consol[df_consol[xdock_col].isin(xdocks_plot)] if len(df_consol) > 0 else df_consol)
 
     def _pct_color(p):
         if p > 100: return RL_DRED
@@ -1278,30 +1278,92 @@ def generate_pdf(df_clean, df_consol, cols, region_filter="Todas"):
         if p > 70:  return RL_AMBER
         return RL_GREEN
 
-    kpi_rows = [[
-        Paragraph(f"<b>{total_pal:,}</b><br/>Pallets Activos", S_CTR),
-        Paragraph(f"<b>{total_m2:,.0f} m²</b><br/>M² Ocupados", S_CTR),
-        Paragraph(f"<b>{cap_region:,} m²</b><br/>Capacidad Total", S_CTR),
-        Paragraph(f"<b>{pct_global}%</b><br/>% Ocupación", S_CTR),
-        Paragraph(f"<b>{disponible:,.0f} m²</b><br/>Disponible", S_CTR),
-    ]]
-    kpi_tbl = Table(kpi_rows, colWidths=[3.3*cm]*5)
+    # ══════════════════════════════════════════════════════════════════════════
+    # COVER PAGE  — logo above blue band, text inside blue band, KPIs below
+    # ══════════════════════════════════════════════════════════════════════════
+
+    # 1. Logo centered above the blue block
+    if os.path.exists(LOGO_PATH):
+        try:
+            logo = RLImage(LOGO_PATH, width=3.8*cm, height=1.9*cm)
+            logo.hAlign = "CENTER"
+            story.append(_spacer(1.2))
+            story.append(logo)
+            story.append(_spacer(0.6))
+        except Exception:
+            story.append(_spacer(3))
+    else:
+        story.append(_spacer(4))
+
+    # 2. Blue banner — each row is a separate cell so padding applies cleanly
+    S_BT = _sty("BT", fontSize=26, textColor=RL_WHITE, fontName="Helvetica-Bold",
+                alignment=TA_CENTER, leading=32, spaceBefore=0, spaceAfter=0)
+    S_BS = _sty("BS", fontSize=12, textColor=colors.HexColor("#C8D8EC"),
+                fontName="Helvetica", alignment=TA_CENTER, leading=18,
+                spaceBefore=0, spaceAfter=0)
+    S_BD = _sty("BD", fontSize=10, textColor=colors.HexColor("#AABBCC"),
+                fontName="Helvetica", alignment=TA_CENTER, leading=14,
+                spaceBefore=0, spaceAfter=0)
+
+    banner_rows = [
+        [Paragraph("GASO COMUNICACIONES", S_BT)],
+        [Paragraph("Reporte Ejecutivo de Ocupación de Inventario", S_BS)],
+        [Paragraph(f"Región: {region_label}", S_BS)],
+        [Paragraph(fecha_str, S_BD)],
+    ]
+    banner_padding = [
+        ("BACKGROUND",    (0,0), (-1,-1), RL_BLUE),
+        ("LEFTPADDING",   (0,0), (-1,-1), 24),
+        ("RIGHTPADDING",  (0,0), (-1,-1), 24),
+        ("TOPPADDING",    (0,0), (0,0),   36),   # top of first row
+        ("BOTTOMPADDING", (0,0), (0,0),   6),
+        ("TOPPADDING",    (0,1), (0,1),   4),
+        ("BOTTOMPADDING", (0,1), (0,1),   4),
+        ("TOPPADDING",    (0,2), (0,2),   4),
+        ("BOTTOMPADDING", (0,2), (0,2),   4),
+        ("TOPPADDING",    (0,3), (0,3),   8),
+        ("BOTTOMPADDING", (0,3), (0,3),   36),  # bottom of last row
+    ]
+    banner_tbl = Table(banner_rows, colWidths=[17*cm])
+    banner_tbl.setStyle(TableStyle(banner_padding))
+    story.append(banner_tbl)
+    story.append(_spacer(0.8))
+
+    # 3. KPI boxes below the banner
     pct_bg = _pct_color(pct_global)
+    S_KPI_VAL = _sty("KV", fontSize=16, fontName="Helvetica-Bold",
+                     textColor=RL_BLUE, alignment=TA_CENTER, leading=20)
+    S_KPI_LAB = _sty("KL", fontSize=8,  fontName="Helvetica",
+                     textColor=colors.HexColor("#555555"), alignment=TA_CENTER, leading=11)
+    S_KPI_PCT_VAL = _sty("KPV", fontSize=16, fontName="Helvetica-Bold",
+                          textColor=RL_WHITE, alignment=TA_CENTER, leading=20)
+    S_KPI_PCT_LAB = _sty("KPL", fontSize=8,  fontName="Helvetica",
+                          textColor=colors.HexColor("#DDEEFF"), alignment=TA_CENTER, leading=11)
+
+    kpi_rows = [[
+        Table([[Paragraph(f"{total_pal:,}", S_KPI_VAL)],
+               [Paragraph("Pallets Activos", S_KPI_LAB)]], colWidths=[3.2*cm]),
+        Table([[Paragraph(f"{total_m2:,.0f} m²", S_KPI_VAL)],
+               [Paragraph("M² Ocupados", S_KPI_LAB)]], colWidths=[3.2*cm]),
+        Table([[Paragraph(f"{cap_region:,} m²", S_KPI_VAL)],
+               [Paragraph("Capacidad Total", S_KPI_LAB)]], colWidths=[3.2*cm]),
+        Table([[Paragraph(f"{pct_global}%", S_KPI_PCT_VAL)],
+               [Paragraph("% Ocupación", S_KPI_PCT_LAB)]], colWidths=[3.2*cm]),
+        Table([[Paragraph(f"{disponible:,.0f} m²", S_KPI_VAL)],
+               [Paragraph("Disponible", S_KPI_LAB)]], colWidths=[3.2*cm]),
+    ]]
+    kpi_tbl = Table(kpi_rows, colWidths=[3.2*cm]*5)
     kpi_tbl.setStyle(TableStyle([
-        ("BACKGROUND", (0,0),(0,0), colors.HexColor("#EBF0F7")),
-        ("BACKGROUND", (1,0),(1,0), colors.HexColor("#EBF0F7")),
-        ("BACKGROUND", (2,0),(2,0), colors.HexColor("#EBF0F7")),
-        ("BACKGROUND", (3,0),(3,0), pct_bg),
-        ("BACKGROUND", (4,0),(4,0), colors.HexColor("#EBF0F7")),
-        ("TEXTCOLOR",  (3,0),(3,0), RL_WHITE),
-        ("FONTNAME",   (3,0),(3,0), "Helvetica-Bold"),
-        ("ALIGN",      (0,0),(-1,-1), "CENTER"),
-        ("VALIGN",     (0,0),(-1,-1), "MIDDLE"),
-        ("ROWHEIGHT",  (0,0),(-1,-1), 1.5*cm),
-        ("BOX",        (0,0),(-1,-1), 0.5, RL_ACCENT),
-        ("INNERGRID",  (0,0),(-1,-1), 0.3, colors.HexColor("#CCDDEE")),
-        ("TOPPADDING", (0,0),(-1,-1), 8),
-        ("BOTTOMPADDING",(0,0),(-1,-1),8),
+        ("BACKGROUND",    (0,0), (1,0),  colors.HexColor("#EBF0F7")),
+        ("BACKGROUND",    (2,0), (2,0),  colors.HexColor("#EBF0F7")),
+        ("BACKGROUND",    (3,0), (3,0),  pct_bg),
+        ("BACKGROUND",    (4,0), (4,0),  colors.HexColor("#EBF0F7")),
+        ("BOX",           (0,0), (-1,-1), 0.5, RL_ACCENT),
+        ("INNERGRID",     (0,0), (-1,-1), 0.3, colors.HexColor("#CCDDEE")),
+        ("ALIGN",         (0,0), (-1,-1), "CENTER"),
+        ("VALIGN",        (0,0), (-1,-1), "MIDDLE"),
+        ("TOPPADDING",    (0,0), (-1,-1), 10),
+        ("BOTTOMPADDING", (0,0), (-1,-1), 10),
     ]))
     story.append(kpi_tbl)
     story.append(PageBreak())
@@ -1439,10 +1501,9 @@ def generate_pdf(df_clean, df_consol, cols, region_filter="Todas"):
     )
     story.append(_fig_to_image(fig_m2, 16, 6.5))
     story.append(Paragraph(
-        f"La capacidad total de la región seleccionada es de <b>{cap_region:,} m²</b>. "
-        f"Actualmente se ocupan <b>{total_m2:,.0f} m²</b>, dejando <b>{disponible:,.0f} m²</b> disponibles "
-        f"({round(100-pct_global,1)}% de holgura). "
-        f"El factor de pasillos del 20% ya está incluido en todos los cálculos.",
+        f"La capacidad total de la región es de <b>{cap_region:,} m²</b>. "
+        f"Actualmente se utilizan <b>{total_m2:,.0f} m²</b>, dejando <b>{disponible:,.0f} m²</b> disponibles "
+        f"({round(100-pct_global,1)}% de holgura operativa).",
         S_BODY))
     story.append(_spacer(0.3))
 
@@ -1524,9 +1585,10 @@ def generate_pdf(df_clean, df_consol, cols, region_filter="Todas"):
         pct_v  = row_d["pct"]
         pal    = int(df_plot[df_plot[xdock_col]==xd][pallet_col].sum())
 
-        tipo_dist = df_plot[df_plot[xdock_col]==xd].groupby(cols["tipo_pallet"])[pallet_col].sum().to_dict()
+        tipo_dist    = df_plot[df_plot[xdock_col]==xd].groupby(cols["tipo_pallet"])[pallet_col].sum().to_dict()
+        carrier_dist = df_plot[df_plot[xdock_col]==xd].groupby(carrier_col)[pallet_col].sum().to_dict()
 
-        analysis_text = _smart_analysis(xd, pct_v/100, pal, m2_ocp, cap, tipo_dist)
+        analysis_text = _smart_analysis(xd, pct_v/100, pal, m2_ocp, cap, tipo_dist, carrier_dist)
         status_lbl    = ("🔴 SATURADO" if pct_v>100 else "🔴 CRÍTICO" if pct_v>90
                          else "🟡 ALERTA" if pct_v>70 else "🟢 NORMAL")
         st_color = (_pct_color(pct_v/100))
