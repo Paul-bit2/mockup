@@ -1518,29 +1518,43 @@ def generate_pdf(df_clean, df_consol, cols, region_filter="Todas"):
                           margin=dict(l=10,r=10,t=10,b=10),
                           font=dict(family="Helvetica", color="#1A3A6B"))
 
+    # Heatmap — full width, tall enough to show all city labels clearly
     heat = df_plot.groupby([xdock_col, mat_col])["M2"].sum().reset_index()
     hp   = heat.pivot(index=xdock_col, columns=mat_col, values="M2").fillna(0)
-    hp.index = [CIUDAD_MAP.get(x,x) for x in hp.index]
-    fig_heat = px.imshow(hp.round(1), text_auto=".0f", aspect="auto",
-                         color_continuous_scale=[[0,"#EBF5FB"],[0.5,GASO_ACCENT],[1,GASO_BLUE]])
-    fig_heat.update_layout(plot_bgcolor="white", paper_bgcolor="white", height=280,
-                            margin=dict(l=10,r=10,t=30,b=10),
-                            font=dict(family="Helvetica", color="#1A3A6B"),
-                            coloraxis_showscale=False)
+    # Sort by total M2 descending so most occupied crossdocks appear first
+    hp["_total"] = hp.sum(axis=1)
+    hp = hp.sort_values("_total", ascending=False).drop(columns=["_total"])
+    hp.index = [CIUDAD_MAP.get(x, x) for x in hp.index]
+    n_rows = len(hp)
+
+    fig_heat = px.imshow(
+        hp.round(1), text_auto=".0f", aspect="auto",
+        color_continuous_scale=[[0,"#EBF5FB"],[0.4,GASO_ACCENT],[1,GASO_BLUE]],
+    )
+    fig_heat.update_layout(
+        plot_bgcolor="white", paper_bgcolor="white",
+        height=max(280, n_rows * 42),        # ~42px per city row
+        margin=dict(l=90, r=20, t=30, b=60), # generous left margin for city names
+        font=dict(family="Helvetica", size=10, color="#1A3A6B"),
+        coloraxis_showscale=False,
+        xaxis=dict(side="bottom", tickangle=-30, tickfont=dict(size=9)),
+        yaxis=dict(tickfont=dict(size=10)),
+    )
+    fig_heat.update_traces(textfont=dict(size=9, color="white"))
 
     story.append(Paragraph("Distribución por Tipo de Material", S_H2))
-    side_data = [[_fig_to_image(fig_pie, 7.8, 6), _fig_to_image(fig_heat, 8.8, 6)]]
-    side_tbl  = Table(side_data, colWidths=[8*cm, 9*cm])
-    side_tbl.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"TOP"),
-                                   ("LEFTPADDING",(0,0),(-1,-1),0),
-                                   ("RIGHTPADDING",(0,0),(-1,-1),4)]))
-    story.append(side_tbl)
+    # Pie chart — full width centered
+    story.append(_fig_to_image(fig_pie, 10, 5.5))
+    story.append(_spacer(0.3))
+    # Heatmap — full width, height proportional to number of crossdocks
+    heat_h_cm = max(5.5, n_rows * 0.9)
+    story.append(_fig_to_image(fig_heat, 17, heat_h_cm))
 
     top_mat = mat_grp.sort_values("Pallets", ascending=False).iloc[0]["Tipo"] if len(mat_grp) else "N/A"
     story.append(Paragraph(
         f"El tipo de material predominante es <b>{top_mat}</b>. "
-        "El mapa de calor muestra la distribución de m² por tipo en cada crossdock, "
-        "permitiendo identificar concentraciones de material específico.",
+        "El mapa de calor muestra los m² que ocupa cada tipo de material por crossdock — "
+        "útil para identificar qué ciudades concentran material de mayor huella.",
         S_BODY))
 
     story.append(PageBreak())
