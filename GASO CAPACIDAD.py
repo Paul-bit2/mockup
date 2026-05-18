@@ -200,8 +200,13 @@ def norm(s):
 
 
 def is_empty_xdock(val):
+    """True if XDOCK is blank/null — candidate for inference."""
     n = norm(val)
-    return not n or n.startswith("seleccion") or n in ("none", "nan")
+    return not n or n in ("none", "nan")
+
+def is_selecciona(val):
+    """True if XDOCK is a 'Selecciona...' placeholder — always delete."""
+    return norm(val).startswith("seleccion")
 
 
 def contains_ens(val):
@@ -262,6 +267,10 @@ def normalize_xdock_name(val):
 
 
 def filter_ens(df, cols):
+    # Eliminate Selecciona... rows immediately — never infer, always drop
+    mask_selecciona = df[cols["xdock"]].apply(lambda x: is_selecciona(x))
+    df = df[~mask_selecciona].copy()
+
     df[cols["xdock"]] = df[cols["xdock"]].apply(
         lambda x: normalize_xdock_name(x) if not is_empty_xdock(x) else x
     )
