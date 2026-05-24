@@ -41,6 +41,9 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
 DECISIONS_FILE = "gaso_decisions.json"   # persisted next to the script
 LOGO_PATH = "GASO_COMUNICACIONES_LOGO.jpg"  # place beside the script
 
+# Salidas before this date are not real exits (no historical data before company change)
+SALIDA_CUTOFF = pd.Timestamp("2025-12-01")
+
 GASO_BLUE   = "#1A3A6B"
 GASO_LIGHT  = "#2E6DB4"
 GASO_ACCENT = "#4A90D9"
@@ -254,10 +257,14 @@ def get_cols(df):
 #  PIPELINE STEPS
 # ─────────────────────────────────────────────────────────────────────────────
 def filter_salidas(df, cols):
+    # Parse fecha_salida to compare against cutoff
+    fechas = pd.to_datetime(df[cols["fecha_salida"]], errors="coerce")
+    fecha_valida = fechas.notna() & (fechas >= SALIDA_CUTOFF)
+
     mask = (
         df[cols["estatus"]].apply(lambda x: norm(x) == "salida")
-        | df[cols["est_salida"]].apply(lambda x: norm(x) == "salida")
-        | df[cols["fecha_salida"]].notna()
+        | (df[cols["est_salida"]].apply(lambda x: norm(x) == "salida") & fecha_valida)
+        | fecha_valida
     )
     return df[~mask].copy(), df[mask].copy()
 
@@ -1871,10 +1878,40 @@ def build_crossdock_excel(df_clean_all, df_consol_all, df_raw_full, xdock_name, 
     # Consolidated active — exactly what the dashboard shows separately
     df_consol_xd = df_consol_all[df_consol_all[xd_col_key] == xdock_name].copy()
 
-    # DIAS INV from pipeline-copied columns
-    dias_col = next((c for c in df_activo.columns if "dias inv" in c.lower()), None)
-    df_activo["_DIAS"]    = pd.to_numeric(df_activo[dias_col], errors="coerce") if dias_col else pd.NA
-    df_consol_xd["_DIAS"] = pd.to_numeric(df_consol_xd[dias_col], errors="coerce") if dias_col else pd.NA
+    # ── Rename normalized columns back to original uppercase names ───────────
+    # Pipeline normalizes col names (lowercase, no accents). The Excel export
+    # and all formula references use the original uppercase names.
+    ORIG_NAMES = {
+        "carrier": "CARRIER", "xdock": "XDOCK",
+        "fecha de ingreso": "FECHA DE INGRESO", "hora de ingreso": "HORA DE INGRESO",
+        "folio almacen origen": "FOLIO ALMACEN ORIGEN", "estatus": "ESTATUS",
+        "clasificacion de material": "CLASIFICACION DE MATERIAL",
+        "tipo de material": "TIPO DE MATERIAL", "id sitio": "ID SITIO",
+        "nombre de sitio": "NOMBRE DE SITIO",
+        "folio cliente ( pdm )": "FOLIO CLIENTE ( PDM )", "id pallet": "ID PALLET",
+        "no. de pallet": "NO. DE PALLET", "tipo de pallet": "TIPO DE PALLET",
+        "folio wms gaso ( unico x pallet )": "FOLIO WMS GASO ( UNICO X PALLET )",
+        "descripcion material": "DESCRIPCION MATERIAL", "proyecto": "PROYECTO",
+        "sub-proyecto": "SUB-PROYECTO",
+        "folio enrutado cliente": "FOLIO ENRUTADO CLIENTE",
+        "estatus salida": "ESTATUS SALIDA", "dias inv.": "DIAS INV.",
+        "fecha de salida": "FECHA DE SALIDA", "hora salida": "HORA SALIDA",
+        "nombre asp": "NOMBRE ASP", "nombre operador": "NOMBRE OPERADOR",
+        "placas": "PLACAS", "observaciones": "OBSERVACIONES",
+        "pallets salida": "PALLETS SALIDA", "existencia real": "EXISTENCIA REAL",
+        "dias que duro en inventario": "DIAS QUE DURO EN INVENTARIO",
+    }
+    df_activo.rename(    columns=ORIG_NAMES, inplace=True)
+    df_consol_xd.rename( columns=ORIG_NAMES, inplace=True)
+
+    # Update col key references to use uppercase now
+    xd_col_key = "XDOCK"
+    car_col_k  = "CARRIER"
+    mat_col_k  = "TIPO DE MATERIAL"
+
+    # DIAS INV
+    df_activo["_DIAS"]    = pd.to_numeric(df_activo.get("DIAS INV.", pd.Series(dtype=float)), errors="coerce")
+    df_consol_xd["_DIAS"] = pd.to_numeric(df_consol_xd.get("DIAS INV.", pd.Series(dtype=float)), errors="coerce")
 
     # Flags
     df_activo["_IS_CONSOL"]    = False
@@ -1891,9 +1928,8 @@ def build_crossdock_excel(df_clean_all, df_consol_all, df_raw_full, xdock_name, 
     def _is_salida_raw(row):
         es = str(row.get("ESTATUS SALIDA", "")).strip().upper()
         fd = row.get("FECHA DE SALIDA", None)
-        fd_valid = (fd is not None and
-                    not (isinstance(fd, float) and pd.isna(fd)) and
-                    str(fd).strip() not in ("", "None", "NaT", "nan"))
+        fd_ts = pd.to_datetime(fd, errors="coerce")
+        fd_valid = (pd.notna(fd_ts) and fd_ts >= SALIDA_CUTOFF)
         return es == "SALIDA" and fd_valid
 
     def _is_zero_pallet(val):
@@ -2669,10 +2705,40 @@ def build_crossdock_pdf(df_clean_all, df_consol_all, df_raw_full, xdock_name, co
     # Consolidated active — exactly what the dashboard shows separately
     df_consol_xd = df_consol_all[df_consol_all[xd_col_key] == xdock_name].copy()
 
-    # DIAS INV from pipeline-copied columns
-    dias_col = next((c for c in df_activo.columns if "dias inv" in c.lower()), None)
-    df_activo["_DIAS"]    = pd.to_numeric(df_activo[dias_col], errors="coerce") if dias_col else pd.NA
-    df_consol_xd["_DIAS"] = pd.to_numeric(df_consol_xd[dias_col], errors="coerce") if dias_col else pd.NA
+    # ── Rename normalized columns back to original uppercase names ───────────
+    # Pipeline normalizes col names (lowercase, no accents). The Excel export
+    # and all formula references use the original uppercase names.
+    ORIG_NAMES = {
+        "carrier": "CARRIER", "xdock": "XDOCK",
+        "fecha de ingreso": "FECHA DE INGRESO", "hora de ingreso": "HORA DE INGRESO",
+        "folio almacen origen": "FOLIO ALMACEN ORIGEN", "estatus": "ESTATUS",
+        "clasificacion de material": "CLASIFICACION DE MATERIAL",
+        "tipo de material": "TIPO DE MATERIAL", "id sitio": "ID SITIO",
+        "nombre de sitio": "NOMBRE DE SITIO",
+        "folio cliente ( pdm )": "FOLIO CLIENTE ( PDM )", "id pallet": "ID PALLET",
+        "no. de pallet": "NO. DE PALLET", "tipo de pallet": "TIPO DE PALLET",
+        "folio wms gaso ( unico x pallet )": "FOLIO WMS GASO ( UNICO X PALLET )",
+        "descripcion material": "DESCRIPCION MATERIAL", "proyecto": "PROYECTO",
+        "sub-proyecto": "SUB-PROYECTO",
+        "folio enrutado cliente": "FOLIO ENRUTADO CLIENTE",
+        "estatus salida": "ESTATUS SALIDA", "dias inv.": "DIAS INV.",
+        "fecha de salida": "FECHA DE SALIDA", "hora salida": "HORA SALIDA",
+        "nombre asp": "NOMBRE ASP", "nombre operador": "NOMBRE OPERADOR",
+        "placas": "PLACAS", "observaciones": "OBSERVACIONES",
+        "pallets salida": "PALLETS SALIDA", "existencia real": "EXISTENCIA REAL",
+        "dias que duro en inventario": "DIAS QUE DURO EN INVENTARIO",
+    }
+    df_activo.rename(    columns=ORIG_NAMES, inplace=True)
+    df_consol_xd.rename( columns=ORIG_NAMES, inplace=True)
+
+    # Update col key references to use uppercase now
+    xd_col_key = "XDOCK"
+    car_col_k  = "CARRIER"
+    mat_col_k  = "TIPO DE MATERIAL"
+
+    # DIAS INV
+    df_activo["_DIAS"]    = pd.to_numeric(df_activo.get("DIAS INV.", pd.Series(dtype=float)), errors="coerce")
+    df_consol_xd["_DIAS"] = pd.to_numeric(df_consol_xd.get("DIAS INV.", pd.Series(dtype=float)), errors="coerce")
 
     # Flags
     df_activo["_IS_CONSOL"]    = False
@@ -2689,9 +2755,8 @@ def build_crossdock_pdf(df_clean_all, df_consol_all, df_raw_full, xdock_name, co
     def _is_salida_raw(row):
         es = str(row.get("ESTATUS SALIDA", "")).strip().upper()
         fd = row.get("FECHA DE SALIDA", None)
-        fd_valid = (fd is not None and
-                    not (isinstance(fd, float) and pd.isna(fd)) and
-                    str(fd).strip() not in ("", "None", "NaT", "nan"))
+        fd_ts = pd.to_datetime(fd, errors="coerce")
+        fd_valid = (pd.notna(fd_ts) and fd_ts >= SALIDA_CUTOFF)
         return es == "SALIDA" and fd_valid
 
     def _is_zero_pallet(val):
@@ -3732,9 +3797,8 @@ if st.session_state.processed:
             def _is_sal_p(row):
                 es = str(row.get("ESTATUS SALIDA","")).strip().upper()
                 fd = row.get("FECHA DE SALIDA", None)
-                fd_valid = (fd is not None and
-                            not (isinstance(fd, float) and pd.isna(fd)) and
-                            str(fd).strip() not in ("","None","NaT","nan"))
+                fd_ts = pd.to_datetime(fd, errors="coerce")
+                fd_valid = (pd.notna(fd_ts) and fd_ts >= SALIDA_CUTOFF)
                 return es == "SALIDA" and fd_valid
             df_raw_p = df_raw_full[df_raw_full["XDOCK"].apply(_match_p)].copy() if df_raw_full is not None else pd.DataFrame()
             n_salidas = df_raw_p.apply(_is_sal_p, axis=1).sum() if len(df_raw_p) > 0 else 0
