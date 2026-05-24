@@ -3713,58 +3713,76 @@ if st.session_state.processed:
                 use_container_width=True,
             )
 
-        # Preview metrics in app
-        if df_raw_full is not None:
-            import pandas as pd
-            def _match(val):
+        # Preview metrics in app — uses df_clean/df_consol (same as dashboard)
+        if True:
+            xd_name_prev = st.session_state.xd_name
+            xd_col_p  = cols["xdock"]
+            car_col_p = cols["carrier"]
+            pal_col_p = cols["no_pallet"]
+
+            # Active normal pallets (same as dashboard occupancy table)
+            df_act_p    = df_clean[df_clean[xd_col_p] == xd_name_prev].copy()
+            # Consolidated (pallet=0)
+            df_cons_p   = df_consol[df_consol[xd_col_p] == xd_name_prev].copy()
+            # Salidas from raw (removed by pipeline)
+            def _match_p(val):
                 if not val: return False
                 v = str(val).strip()
-                return v == st.session_state.xd_name or XDOCK_ALIASES.get(norm(v), v) == st.session_state.xd_name
-
-            df_xd_prev = df_raw_full[df_raw_full["XDOCK"].apply(_match)].copy()
-            df_xd_prev["_FECHA_ING"] = pd.to_datetime(df_xd_prev["FECHA DE INGRESO"], errors="coerce")
-            df_xd_prev["_DIAS"]      = pd.to_numeric(df_xd_prev.get("DIAS INV.", pd.Series()), errors="coerce")
-            df_xd_prev["_EXIST"]     = pd.to_numeric(df_xd_prev.get("EXISTENCIA REAL", pd.Series()), errors="coerce")
-
-            def _is_sal(row):
+                return v == xd_name_prev or XDOCK_ALIASES.get(norm(v), v) == xd_name_prev
+            def _is_sal_p(row):
                 es = str(row.get("ESTATUS SALIDA","")).strip().upper()
                 fd = row.get("FECHA DE SALIDA", None)
                 fd_valid = (fd is not None and
                             not (isinstance(fd, float) and pd.isna(fd)) and
-                            str(fd).strip() not in ("", "None", "NaT", "nan"))
+                            str(fd).strip() not in ("","None","NaT","nan"))
                 return es == "SALIDA" and fd_valid
+            df_raw_p = df_raw_full[df_raw_full["XDOCK"].apply(_match_p)].copy() if df_raw_full is not None else pd.DataFrame()
+            n_salidas = df_raw_p.apply(_is_sal_p, axis=1).sum() if len(df_raw_p) > 0 else 0
 
-            df_xd_prev["_ES_SAL"] = df_xd_prev.apply(_is_sal, axis=1)
-            df_act_p = df_xd_prev[~df_xd_prev["_ES_SAL"]]
+            # DIAS INV from pipeline columns
+            dias_col_p = next((c for c in df_act_p.columns if "dias inv" in c.lower()), None)
+            dias_s = pd.to_numeric(df_act_p[dias_col_p], errors="coerce") if dias_col_p else pd.Series(dtype=float)
+            dias_med   = dias_s.median() if len(dias_s.dropna()) > 0 else 0
+            dias_90    = int((dias_s.dropna() > 90).sum())
+
+            n_total = len(df_act_p) + len(df_cons_p) + int(n_salidas)
 
             with st.expander(f"📋 Vista previa – {st.session_state.xd_city}", expanded=True):
-                pm1, pm2, pm3, pm4, pm5 = st.columns(5)
+                pm1, pm2, pm3, pm4, pm5, pm6 = st.columns(6)
                 mets = [
-                    (pm1, "Total registros",    f"{len(df_xd_prev):,}"),
-                    (pm2, "En inventario",      f"{len(df_act_p):,}"),
-                    (pm3, "Salidas procesadas", f"{df_xd_prev['_ES_SAL'].sum():,}"),
-                    (pm4, "Días prom. inv.",    f"{df_act_p['_DIAS'].median():.0f}" if len(df_act_p)>0 else "-"),
-                    (pm5, ">90 días en inv.",   f"{int((df_act_p['_DIAS'].dropna()>90).sum()):,}"),
+                    (pm1, "Total registros",       f"{n_total:,}"),
+                    (pm2, "Pallets activos",        f"{len(df_act_p):,}"),
+                    (pm3, "Consolidados activos",   f"{len(df_cons_p):,}"),
+                    (pm4, "Salidas procesadas",     f"{int(n_salidas):,}"),
+                    (pm5, "Días prom. inv.",         f"{dias_med:.0f}" if dias_med else "-"),
+                    (pm6, ">90 días en inv.",        f"{dias_90:,}"),
                 ]
                 for col_m, lbl, val in mets:
                     with col_m:
                         st.metric(lbl, val)
 
-                # Carrier breakdown table
-                if "CARRIER" in df_xd_prev.columns:
-                    car_summ = []
-                    for car in sorted(df_xd_prev["CARRIER"].dropna().unique()):
-                        df_cc = df_xd_prev[df_xd_prev["CARRIER"]==car]
-                        df_ca = df_cc[~df_cc["_ES_SAL"]]
-                        pct_r = df_cc["_ES_SAL"].sum()/len(df_cc) if len(df_cc)>0 else 0
-                        car_summ.append({
-                            "Carrier": car,
-                            "Entradas": len(df_cc),
-                            "En inventario": len(df_ca),
-                            "Salidas": int(df_cc["_ES_SAL"].sum()),
-                            "% Rotación": f"{pct_r:.1%}",
-                            "Días prom.": f"{df_ca['_DIAS'].median():.0f}" if len(df_ca)>0 else "-",
-                        })
+                # Carrier breakdown — same source as dashboard
+                car_summ = []
+                for car in sorted(df_clean[xd_col_p].where(df_clean[xd_col_p]==xd_name_prev).dropna().index.map(
+                        lambda i: df_clean.loc[i, car_col_p]).dropna().unique()):
+                    df_ca = df_act_p[df_act_p[car_col_p] == car]
+                    df_cc = df_cons_p[df_cons_p[car_col_p] == car] if car_col_p in df_cons_p.columns else pd.DataFrame()
+                    # Salidas for this carrier from raw
+                    df_raw_car = df_raw_p[df_raw_p["CARRIER"] == car] if len(df_raw_p) > 0 and "CARRIER" in df_raw_p.columns else pd.DataFrame()
+                    n_sal_car  = df_raw_car.apply(_is_sal_p, axis=1).sum() if len(df_raw_car) > 0 else 0
+                    n_ent_car  = len(df_ca) + len(df_cc) + int(n_sal_car)
+                    dias_car   = pd.to_numeric(df_ca[dias_col_p], errors="coerce") if dias_col_p else pd.Series(dtype=float)
+                    pct_r = int(n_sal_car) / n_ent_car if n_ent_car > 0 else 0
+                    car_summ.append({
+                        "Carrier":          car,
+                        "Entradas":         n_ent_car,
+                        "Pallets activos":  len(df_ca),
+                        "Consolidados":     len(df_cc),
+                        "Salidas":          int(n_sal_car),
+                        "% Rotación":       f"{pct_r:.1%}",
+                        "Días prom.":       f"{dias_car.median():.0f}" if len(dias_car.dropna())>0 else "-",
+                    })
+                if car_summ:
                     st.dataframe(pd.DataFrame(car_summ), use_container_width=True, hide_index=True)
 
     # ── Downloads ─────────────────────────────────────────────────────────────
