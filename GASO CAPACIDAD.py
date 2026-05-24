@@ -1887,9 +1887,23 @@ def build_crossdock_excel(df_raw_full, xdock_name, cols):
         return es == "SALIDA" and fd_valid
 
     df_xd["_ES_SALIDA"] = df_xd.apply(_is_salida, axis=1)
-    df_activo  = df_xd[~df_xd["_ES_SALIDA"]].copy()
-    df_salidas = df_xd[df_xd["_ES_SALIDA"]].copy()
 
+    # ── Separate consolidados (NO. DE PALLET == 0) ───────────────────────
+    # Consolidados are small items on top of another pallet.
+    # They are NOT counted as pallets in KPIs, aging or days averages.
+    def _is_zero_pallet(val):
+        try: return float(val) == 0
+        except: return False
+
+    df_xd["_IS_CONSOL"] = df_xd["NO. DE PALLET"].apply(_is_zero_pallet)
+    # Normal active inventory (not a salida, pallet > 0)
+    df_activo        = df_xd[~df_xd["_ES_SALIDA"] & ~df_xd["_IS_CONSOL"]].copy()
+    # Consolidated active (not a salida, pallet = 0) — for traceability only
+    df_consol_xd     = df_xd[~df_xd["_ES_SALIDA"] &  df_xd["_IS_CONSOL"]].copy()
+    # All salidas (for flow/balance reporting)
+    df_salidas       = df_xd[ df_xd["_ES_SALIDA"]].copy()
+    # Normal salidas only (pallet > 0)
+    df_salidas_normal= df_xd[ df_xd["_ES_SALIDA"] & ~df_xd["_IS_CONSOL"]].copy()
     carriers = sorted(df_xd["CARRIER"].dropna().unique())
     tipos    = sorted(df_xd["TIPO DE MATERIAL"].fillna("SIN CLASIFICAR").unique())
     clasifs  = sorted(df_xd["CLASIFICACION DE MATERIAL"].fillna("OTRO").unique())
@@ -2293,8 +2307,11 @@ def build_crossdock_excel(df_raw_full, xdock_name, cols):
     r_car = 5
     for car in carriers:
         df_car = df_xd[df_xd["CARRIER"] == car]
-        df_car_act = df_car[~df_car["_ES_SALIDA"]]
-        df_car_sal = df_car[df_car["_ES_SALIDA"]]
+        # Exclude consolidados from KPI counts
+        df_car_norm   = df_car[~df_car["_IS_CONSOL"]]
+        df_car_act    = df_car_norm[~df_car_norm["_ES_SALIDA"]]
+        df_car_sal    = df_car_norm[ df_car_norm["_ES_SALIDA"]]
+        df_car_consol = df_car[df_car["_IS_CONSOL"] & ~df_car["_ES_SALIDA"]]
 
         # Carrier header
         ws_car.row_dimensions[r_car].height = 24
@@ -2643,8 +2660,23 @@ def build_crossdock_pdf(df_raw_full, xdock_name, cols):
         return es == "SALIDA" and fd_valid
 
     df_xd["_ES_SALIDA"] = df_xd.apply(_is_salida, axis=1)
-    df_activo  = df_xd[~df_xd["_ES_SALIDA"]]
-    df_salidas = df_xd[ df_xd["_ES_SALIDA"]]
+
+    # ── Separate consolidados (NO. DE PALLET == 0) ───────────────────────
+    # Consolidados are small items on top of another pallet.
+    # They are NOT counted as pallets in KPIs, aging or days averages.
+    def _is_zero_pallet(val):
+        try: return float(val) == 0
+        except: return False
+
+    df_xd["_IS_CONSOL"] = df_xd["NO. DE PALLET"].apply(_is_zero_pallet)
+    # Normal active inventory (not a salida, pallet > 0)
+    df_activo        = df_xd[~df_xd["_ES_SALIDA"] & ~df_xd["_IS_CONSOL"]].copy()
+    # Consolidated active (not a salida, pallet = 0) — for traceability only
+    df_consol_xd     = df_xd[~df_xd["_ES_SALIDA"] &  df_xd["_IS_CONSOL"]].copy()
+    # All salidas (for flow/balance reporting)
+    df_salidas       = df_xd[ df_xd["_ES_SALIDA"]].copy()
+    # Normal salidas only (pallet > 0)
+    df_salidas_normal= df_xd[ df_xd["_ES_SALIDA"] & ~df_xd["_IS_CONSOL"]].copy()
     carriers   = sorted(df_xd["CARRIER"].dropna().unique())
 
     RL_BLUE   = colors.HexColor("#1A3A6B")
@@ -2740,9 +2772,12 @@ def build_crossdock_pdf(df_raw_full, xdock_name, cols):
     story.append(_sp(0.8))
 
     # KPI cover boxes
-    n_ent  = len(df_xd);  n_act = len(df_activo); n_sal = len(df_salidas)
-    pct_rot= n_sal/n_ent if n_ent>0 else 0
-    dias_p = df_activo["_DIAS"].median() if len(df_activo)>0 else 0
+    n_ent    = len(df_xd)
+    n_act    = len(df_activo)       # normal active pallets (pallet > 0)
+    n_consol = len(df_consol_xd)    # consolidated active (pallet = 0)
+    n_sal    = len(df_salidas_normal)  # normal salidas
+    pct_rot  = n_sal / (n_ent - len(df_xd[df_xd["_IS_CONSOL"]])) if (n_ent - len(df_xd[df_xd["_IS_CONSOL"]])) > 0 else 0
+    dias_p   = df_activo["_DIAS"].median() if len(df_activo)>0 else 0
 
     def _pct_c(p):
         if p>100: return RL_DRED
@@ -2768,10 +2803,9 @@ def build_crossdock_pdf(df_raw_full, xdock_name, cols):
 
     kpi_row = [[
         _kpi_cell(f"{n_ent:,}", "Registros Totales"),
-        _kpi_cell(f"{n_act:,}", "En Inventario"),
+        _kpi_cell(f"{n_act:,}", "Pallets Activos"),
+        _kpi_cell(f"{n_consol:,}", "Consolidados Activos"),
         _kpi_cell(f"{n_sal:,}", "Salidas Procesadas"),
-        _kpi_cell(f"{pct_rot:.0%}", "% Rotación",
-                  bg=_pct_c(pct_rot*100 if cap==0 else n_act/cap*100), fg=RL_WHITE),
         _kpi_cell(f"{dias_p:.0f} d", "Días Prom. Inventario"),
     ]]
     kpi_tbl = Table(kpi_row, colWidths=[3.2*cm]*5)
@@ -2790,13 +2824,15 @@ def build_crossdock_pdf(df_raw_full, xdock_name, cols):
     bal_data = [bal_hdr]
     for car in carriers:
         df_c  = df_xd[df_xd["CARRIER"]==car]
-        df_ca = df_c[~df_c["_ES_SALIDA"]]
-        df_cs = df_c[df_c["_ES_SALIDA"]]
+        df_cn = df_c[~df_c["_IS_CONSOL"]]  # normal only (pallet > 0)
+        df_ca = df_cn[~df_cn["_ES_SALIDA"]]
+        df_cs = df_cn[ df_cn["_ES_SALIDA"]]
+        df_cc = df_c[df_c["_IS_CONSOL"] & ~df_c["_ES_SALIDA"]]  # consolidados activos
         df_cd = df_c[df_c.get("ESTATUS","").apply(lambda x: str(x).upper()=="DEVOLUCION") if "ESTATUS" in df_c.columns else pd.Series([False]*len(df_c))]
         pct_c = len(df_cs)/len(df_c) if len(df_c)>0 else 0
         dias_c= df_ca["_DIAS"].median() if len(df_ca)>0 else 0
-        bal_data.append([car, f"{len(df_c):,}", f"{len(df_ca):,}", f"{len(df_cs):,}",
-                         f"{pct_c:.1%}", f"{dias_c:.0f} días", f"{len(df_cd):,}"])
+        bal_data.append([car, f"{len(df_cn):,}", f"{len(df_ca):,}", f"{len(df_cs):,}",
+                         f"{pct_c:.1%}", f"{dias_c:.0f} días", f"{len(df_cc):,} consol."])
 
     story.append(_tbl(bal_data, [3.0*cm,2.0*cm,2.0*cm,2.0*cm,2.2*cm,2.2*cm,2.4*cm]))
     story.append(_sp(0.4))
@@ -2804,9 +2840,11 @@ def build_crossdock_pdf(df_raw_full, xdock_name, cols):
     # Narrative
     for car in carriers:
         df_c  = df_xd[df_xd["CARRIER"]==car]
-        df_ca = df_c[~df_c["_ES_SALIDA"]]
-        df_cs = df_c[df_c["_ES_SALIDA"]]
-        pct_c = len(df_cs)/len(df_c) if len(df_c)>0 else 0
+        df_cn = df_c[~df_c["_IS_CONSOL"]]
+        df_ca = df_cn[~df_cn["_ES_SALIDA"]]
+        df_cs = df_cn[ df_cn["_ES_SALIDA"]]
+        df_cc = df_c[df_c["_IS_CONSOL"] & ~df_c["_ES_SALIDA"]]
+        pct_c = len(df_cs)/len(df_cn) if len(df_cn)>0 else 0
         dias_c= df_ca["_DIAS"].median() if len(df_ca)>0 else 0
         if pct_c < 0.3:
             txt = (f"<b>{car}</b> muestra una rotación baja del {pct_c:.0%} en {ciudad}. "
@@ -2866,6 +2904,14 @@ def build_crossdock_pdf(df_raw_full, xdock_name, cols):
     items_critical = int((dias_act > 90).sum())
     items_urgent   = int((dias_act > 180).sum())
     dias_med       = dias_act.median() if len(dias_act)>0 else 0
+    if n_consol > 0:
+        story.append(Paragraph(
+            f"Nota: se identificaron <b>{n_consol} sitios consolidados</b> (NO. PALLET = 0) "
+            "en inventario activo. Estos materiales están encima de otra tarima y "
+            "<b>no se incluyen en ninguno de los indicadores anteriores</b>.",
+            _sty("ConsNote", fontSize=8, textColor=colors.HexColor("#7D3C00"),
+                 fontName="Helvetica", leading=12, backColor=colors.HexColor("#FFF3CD"),
+                 spaceAfter=8)))
     if items_urgent > 0:
         aging_txt = (f"Se detectan <b>{items_urgent} pallets con más de 180 días</b> en inventario — "
                      f"material potencialmente obsoleto que requiere revisión prioritaria. "
