@@ -2234,10 +2234,12 @@ def build_crossdock_excel(df_clean_all, df_consol_all, df_raw_full, xdock_name, 
     ws_trend = wb.create_sheet("TENDENCIA MENSUAL")
     ws_trend.sheet_view.showGridLines = False
     _title_block(ws_trend, f"TENDENCIA MENSUAL – {ciudad}",
-                 "Evolución de entradas y salidas mes a mes", n_cols=12)
+                 f"Evolución de entradas y salidas desde inicio de operaciones ({SALIDA_CUTOFF.strftime('%b %Y')})", n_cols=12)
     df_xd["_FECHA_ING"] = pd.to_datetime(df_xd.get("FECHA DE INGRESO", pd.Series(dtype=str)), errors="coerce")
     df_xd["_MES_STR"]   = df_xd["_FECHA_ING"].dt.strftime("%Y-%m").fillna("DESCONOCIDO")
-    meses_range = sorted(df_xd[df_xd["_MES_STR"]!="DESCONOCIDO"]["_MES_STR"].unique())
+    # Only show months from operational start (SALIDA_CUTOFF) — filters out pre-system data
+    df_xd_ops  = df_xd[df_xd["_FECHA_ING"] >= SALIDA_CUTOFF].copy()
+    meses_range = sorted(df_xd_ops[df_xd_ops["_MES_STR"]!="DESCONOCIDO"]["_MES_STR"].unique())
 
     r = 5
     trend_hdrs = ["MES"] + [f"ENT.\n{car}" for car in carriers] +                  ["TOTAL ENT."] + [f"SAL.\n{car}" for car in carriers] + ["TOTAL SAL.", "BALANCE"]
@@ -2253,7 +2255,7 @@ def build_crossdock_excel(df_clean_all, df_consol_all, df_raw_full, xdock_name, 
         ws_trend.cell(row=er, column=1).fill = _fill(C_LGRAY if alt else C_WHITE)
         ws_trend.cell(row=er, column=1).border = BORDER
         for ci, car in enumerate(carriers, 2):
-            n = len(df_xd[(df_xd["_MES_STR"]==mes) & (df_xd["CARRIER"]==car)])
+            n = len(df_xd_ops[(df_xd_ops["_MES_STR"]==mes) & (df_xd_ops["CARRIER"]==car)])
             c = ws_trend.cell(row=er, column=ci, value=n)
             c.fill = _fill(C_LGRAY if alt else C_WHITE); c.alignment = _ctr()
             c.number_format = "0"; c.border = BORDER
@@ -2406,8 +2408,8 @@ def build_crossdock_excel(df_clean_all, df_consol_all, df_raw_full, xdock_name, 
     ws_stat = wb.create_sheet("ESTADÍSTICAS")
     ws_stat.sheet_view.showGridLines = False
     _title_block(ws_stat, f"ESTADÍSTICAS AVANZADAS – {ciudad}",
-                 "Regresión lineal, percentiles y proyecciones de tendencia", n_cols=12)
-    df_mes_stat = df_xd[df_xd["_MES_STR"]!="DESCONOCIDO"].groupby("_MES_STR").agg(
+                 f"Regresión lineal y proyecciones — período operativo desde {SALIDA_CUTOFF.strftime('%b %Y')}", n_cols=12)
+    df_mes_stat = df_xd_ops[df_xd_ops["_MES_STR"]!="DESCONOCIDO"].groupby("_MES_STR").agg(
         Entradas=("CARRIER","count"), Salidas=("_ES_SALIDA","sum"),
     ).reset_index().sort_values("_MES_STR").reset_index(drop=True)
     df_mes_stat["x"] = range(len(df_mes_stat))
@@ -2870,10 +2872,12 @@ def build_crossdock_pdf(df_clean_all, df_consol_all, df_raw_full, xdock_name, co
     story.append(Paragraph("3. Tendencia Mensual y Proyección", S_H1))
     story.append(_hr())
 
-    df_mes = df_xd[df_xd["_MES_STR"]!="DESCONOCIDO"].groupby("_MES_STR").agg(
+    # Only operational period (since SALIDA_CUTOFF) — excludes pre-system data
+    df_xd_ops  = df_xd[df_xd["_FECHA_ING"] >= SALIDA_CUTOFF].copy() if "_FECHA_ING" in df_xd.columns else df_xd.copy()
+    df_mes = df_xd_ops[df_xd_ops["_MES_STR"]!="DESCONOCIDO"].groupby("_MES_STR").agg(
         Entradas=("CARRIER","count"),
         Salidas=("_ES_SALIDA","sum"),
-    ).reset_index().sort_values("_MES_STR").tail(18)  # last 18 months
+    ).reset_index().sort_values("_MES_STR")  # all months since ops start
 
     trend_hdr  = ["Mes","Entradas","Salidas","Balance"]
     trend_data = [trend_hdr]
