@@ -59,10 +59,10 @@ CAPACIDADES = {
 }
 
 REGION_MAP = {
-    "Gaso- La Paz-E-NS":       "REGIÓN LUIS",
-    "Gaso- Culiacán-E-NS":     "REGIÓN LUIS",
-    "Gaso- Guadalajara-E-NS":  "REGIÓN LUIS",
-    "Gaso- Querétaro-E-NS":    "REGIÓN LUIS",
+    "Gaso- La Paz-E-NS":       "REGIÓN JOSÉ",
+    "Gaso- Culiacán-E-NS":     "REGIÓN JOSÉ",
+    "Gaso- Guadalajara-E-NS":  "REGIÓN JOSÉ",
+    "Gaso- Querétaro-E-NS":    "REGIÓN JOSÉ",
     "Gaso- Tijuana-E-NS":      "REGIÓN JORGE",
     "Gaso- Hermosillo-E-NS":   "REGIÓN JORGE",
     "Gaso- Cd. Juarez-E-NS":   "REGIÓN JORGE",
@@ -538,6 +538,45 @@ def assign_region(df, cols):
 def run_pipeline(uploaded_file, saved_decisions: dict):
     logs = []
     df_raw = load_file(uploaded_file)
+    # Keep raw copy (with SALIDAS) for crossdock deep analysis
+    df_raw_full = df_raw.copy()
+    # Re-map normalized col names to original-style names for crossdock analysis
+    col_remap = {v: k for k, v in {
+        "CARRIER": "CARRIER", "XDOCK": "XDOCK",
+        "FECHA DE INGRESO": "FECHA DE INGRESO", "HORA DE INGRESO": "HORA DE INGRESO",
+        "FOLIO ALMACEN ORIGEN": "FOLIO ALMACEN ORIGEN", "ESTATUS": "ESTATUS",
+        "CLASIFICACION DE MATERIAL": "CLASIFICACION DE MATERIAL",
+        "TIPO DE MATERIAL": "TIPO DE MATERIAL", "ID SITIO": "ID SITIO",
+        "NOMBRE DE SITIO": "NOMBRE DE SITIO",
+        "FOLIO CLIENTE ( PDM )": "FOLIO CLIENTE ( PDM )", "ID PALLET": "ID PALLET",
+        "NO. DE PALLET": "NO. DE PALLET", "TIPO DE PALLET": "TIPO DE PALLET",
+        "FOLIO WMS GASO ( UNICO X PALLET )": "FOLIO WMS GASO ( UNICO X PALLET )",
+        "DESCRIPCION MATERIAL": "DESCRIPCION MATERIAL", "PROYECTO": "PROYECTO",
+        "SUB-PROYECTO": "SUB-PROYECTO", "FOLIO ENRUTADO CLIENTE": "FOLIO ENRUTADO CLIENTE",
+        "ESTATUS SALIDA": "ESTATUS SALIDA", "DIAS INV.": "DIAS INV.",
+        "FECHA DE SALIDA": "FECHA DE SALIDA", "HORA SALIDA": "HORA SALIDA",
+        "NOMBRE ASP": "NOMBRE ASP", "NOMBRE OPERADOR": "NOMBRE OPERADOR",
+        "PLACAS": "PLACAS", "OBSERVACIONES": "OBSERVACIONES",
+        "PALLETS SALIDA": "PALLETS SALIDA", "EXISTENCIA REAL": "EXISTENCIA REAL",
+        "DIAS QUE DURO EN INVENTARIO": "DIAS QUE DURO EN INVENTARIO",
+    }.items()}
+    # Restore original column names (un-normalize) so crossdock functions can find them
+    from unidecode import unidecode as _ud
+    def _unnorm(col):
+        for orig in ["CARRIER","XDOCK","FECHA DE INGRESO","HORA DE INGRESO",
+                     "FOLIO ALMACEN ORIGEN","ESTATUS","CLASIFICACION DE MATERIAL",
+                     "TIPO DE MATERIAL","ID SITIO","NOMBRE DE SITIO",
+                     "FOLIO CLIENTE ( PDM )","ID PALLET","NO. DE PALLET",
+                     "TIPO DE PALLET","FOLIO WMS GASO ( UNICO X PALLET )",
+                     "DESCRIPCION MATERIAL","PROYECTO","SUB-PROYECTO",
+                     "FOLIO ENRUTADO CLIENTE","ESTATUS SALIDA","DIAS INV.",
+                     "FECHA DE SALIDA","HORA SALIDA","NOMBRE ASP","NOMBRE OPERADOR",
+                     "PLACAS","OBSERVACIONES","PALLETS SALIDA","EXISTENCIA REAL",
+                     "DIAS QUE DURO EN INVENTARIO"]:
+            if _ud(orig).strip().lower() == col.strip().lower():
+                return orig
+        return col
+    df_raw_full.columns = [_unnorm(c) for c in df_raw_full.columns]
     logs.append(f"✅ Archivo cargado: {len(df_raw):,} registros totales")
 
     cols = get_cols(df_raw)
@@ -1730,6 +1769,1202 @@ def generate_pdf(df_clean, df_consol, cols, region_filter="Todas"):
     buf.seek(0)
     return buf
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  CROSSDOCK DEEP ANALYSIS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_crossdock_excel(df_raw_full, xdock_name, cols):
+    """
+    Build a professional analyst-grade Excel workbook for a single crossdock.
+    Uses Excel formulas throughout so all metrics update when data changes.
+    df_raw_full: the FULL raw dataframe (before pipeline filtering) so we
+                 have SALIDA rows too for balance analysis.
+    """
+    import openpyxl
+    from openpyxl.styles import (Font, PatternFill, Alignment, Border, Side,
+                                  GradientFill)
+    from openpyxl.utils import get_column_letter
+    from openpyxl.chart import BarChart, LineChart, PieChart, Reference
+    from openpyxl.chart.series import DataPoint
+    import pandas as pd
+    import numpy as np
+    from unidecode import unidecode
+
+    ciudad   = CIUDAD_MAP.get(xdock_name, xdock_name)
+    fecha_hoy = datetime.date.today().strftime("%d/%m/%Y")
+
+    # ── Palette ──────────────────────────────────────────────────────────────
+    C_BLUE   = "1A3A6B"
+    C_LIGHT  = "2E6DB4"
+    C_ACCENT = "4A90D9"
+    C_WHITE  = "FFFFFF"
+    C_LGRAY  = "EBF0F7"
+    C_MGRAY  = "D5E3F5"
+    C_GREEN  = "1E8449"
+    C_AMBER  = "E67E22"
+    C_RED    = "C0392B"
+    C_DRED   = "7B241C"
+    C_GOLD   = "F5C518"
+    C_PURPLE = "6C3483"
+
+    def _fill(hex_c):   return PatternFill("solid", fgColor=hex_c)
+    def _font(bold=False, color=C_WHITE, size=10, name="Calibri"):
+        return Font(name=name, bold=bold, color=color, size=size)
+    def _ctr(wrap=True):
+        return Alignment(horizontal="center", vertical="center", wrap_text=wrap)
+    def _lft():         return Alignment(horizontal="left",  vertical="center")
+    def _rgt():         return Alignment(horizontal="right", vertical="center")
+
+    _th = Side(style="thin",   color="BBBBBB")
+    _md = Side(style="medium", color=C_BLUE)
+    BORDER  = Border(left=_th,  right=_th,  top=_th,  bottom=_th)
+    BORDER_M= Border(left=_md,  right=_md,  top=_md,  bottom=_md)
+
+    def _hdr_cell(ws, row, col, val, bg=C_BLUE, fg=C_WHITE, sz=10, bold=True):
+        c = ws.cell(row=row, column=col, value=val)
+        c.font = _font(bold=bold, color=fg, size=sz)
+        c.fill = _fill(bg); c.border = BORDER; c.alignment = _ctr()
+        return c
+
+    def _data_cell(ws, row, col, val, alt=False, fmt=None, align="left"):
+        c = ws.cell(row=row, column=col, value=val)
+        c.font   = _font(bold=False, color="222222")
+        c.fill   = _fill(C_LGRAY if alt else C_WHITE)
+        c.border = BORDER
+        c.alignment = _ctr() if align == "center" else (_rgt() if align == "right" else _lft())
+        if fmt: c.number_format = fmt
+        return c
+
+    def _title_block(ws, title, subtitle, n_cols=20):
+        ws.row_dimensions[1].height = 36
+        ws.row_dimensions[2].height = 20
+        ws.row_dimensions[3].height = 16
+        end = get_column_letter(n_cols)
+        ws.merge_cells(f"A1:{end}1")
+        c = ws["A1"]
+        c.value = f"GASO COMUNICACIONES  –  {ciudad.upper()}"
+        c.font  = _font(bold=True, size=14, color=C_WHITE)
+        c.fill  = _fill(C_BLUE); c.alignment = _ctr()
+        ws.merge_cells(f"A2:{end}2")
+        c = ws["A2"]
+        c.value = title
+        c.font  = _font(bold=True, size=11, color=C_WHITE)
+        c.fill  = _fill(C_LIGHT); c.alignment = _ctr()
+        ws.merge_cells(f"A3:{end}3")
+        c = ws["A3"]
+        c.value = f"{subtitle}   |   {xdock_name}   |   Generado: {fecha_hoy}"
+        c.font  = _font(bold=False, size=9, color="555555")
+        c.fill  = _fill("F4F6F9"); c.alignment = _ctr()
+
+    # ── Prepare data ─────────────────────────────────────────────────────────
+    # Filter for this crossdock (raw data has XDOCK aliases, normalize)
+    def _match_xdock(val):
+        if not val: return False
+        v = str(val).strip()
+        return v == xdock_name or XDOCK_ALIASES.get(norm(v), v) == xdock_name
+
+    df_xd = df_raw_full[df_raw_full["XDOCK"].apply(_match_xdock)].copy()
+
+    # Parse dates
+    df_xd["_FECHA_ING"] = pd.to_datetime(df_xd["FECHA DE INGRESO"], errors="coerce")
+    df_xd["_FECHA_SAL"] = pd.to_datetime(df_xd["FECHA DE SALIDA"],  errors="coerce")
+    df_xd["_MES_ING"]   = df_xd["_FECHA_ING"].dt.to_period("M").astype(str)
+    df_xd["_AÑO_ING"]   = df_xd["_FECHA_ING"].dt.year
+    df_xd["_NO_PAL"]    = pd.to_numeric(df_xd["NO. DE PALLET"], errors="coerce").fillna(0)
+    df_xd["_DIAS"]      = pd.to_numeric(df_xd["DIAS INV."], errors="coerce")
+    df_xd["_DIAS_DUR"]  = pd.to_numeric(df_xd["DIAS QUE DURO EN INVENTARIO"], errors="coerce")
+
+    # Active (inventario) vs Salidas
+    def _is_salida(row):
+        es = str(row.get("ESTATUS SALIDA", "")).strip().upper()
+        fd = row.get("FECHA DE SALIDA", None)
+        # A record is a SALIDA only when ESTATUS SALIDA = "SALIDA"
+        # AND has a real (non-null) FECHA DE SALIDA
+        fd_valid = (fd is not None and
+                    not (isinstance(fd, float) and pd.isna(fd)) and
+                    str(fd).strip() not in ("", "None", "NaT", "nan"))
+        return es == "SALIDA" and fd_valid
+
+    df_xd["_ES_SALIDA"] = df_xd.apply(_is_salida, axis=1)
+    df_activo  = df_xd[~df_xd["_ES_SALIDA"]].copy()
+    df_salidas = df_xd[df_xd["_ES_SALIDA"]].copy()
+
+    carriers = sorted(df_xd["CARRIER"].dropna().unique())
+    tipos    = sorted(df_xd["TIPO DE MATERIAL"].fillna("SIN CLASIFICAR").unique())
+    clasifs  = sorted(df_xd["CLASIFICACION DE MATERIAL"].fillna("OTRO").unique())
+    cap      = CAPACIDADES.get(xdock_name, 0)
+
+    wb = openpyxl.Workbook()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 1: DATOS BASE (raw filtered data — dynamic source for all formulas)
+    # ══════════════════════════════════════════════════════════════════════════
+    ws_data = wb.active
+    ws_data.title = "DATOS"
+    ws_data.sheet_view.showGridLines = False
+
+    # Write full raw data (normalized)
+    export_cols = [
+        "CARRIER","XDOCK","FECHA DE INGRESO","ESTATUS","CLASIFICACION DE MATERIAL",
+        "TIPO DE MATERIAL","ID SITIO","NOMBRE DE SITIO","NO. DE PALLET","TIPO DE PALLET",
+        "DESCRIPCION MATERIAL","PROYECTO","ESTATUS SALIDA","DIAS INV.",
+        "FECHA DE SALIDA","PALLETS SALIDA","EXISTENCIA REAL","DIAS QUE DURO EN INVENTARIO",
+        "NOMBRE ASP","OBSERVACIONES",
+    ]
+    export_cols = [c for c in export_cols if c in df_xd.columns]
+
+    _title_block(ws_data, f"BASE DE DATOS – {ciudad}", "Fuente dinámica para todos los análisis", n_cols=len(export_cols))
+    ws_data.row_dimensions[5].height = 28
+    for ci, h in enumerate(export_cols, 1):
+        _hdr_cell(ws_data, 5, ci, h, bg=C_BLUE)
+        ws_data.column_dimensions[get_column_letter(ci)].width = max(len(h)+2, 14)
+
+    df_export = df_xd[export_cols].copy()
+    df_export["FECHA DE INGRESO"] = df_export["FECHA DE INGRESO"].apply(
+        lambda x: x.strftime("%Y-%m-%d") if hasattr(x, "strftime") else x)
+    df_export["FECHA DE SALIDA"]  = df_export["FECHA DE SALIDA"].apply(
+        lambda x: x.strftime("%Y-%m-%d") if hasattr(x, "strftime") and pd.notna(x) else x)         if "FECHA DE SALIDA" in df_export.columns else df_export.get("FECHA DE SALIDA", "")
+
+    for ri, (_, row) in enumerate(df_export.iterrows()):
+        er  = 6 + ri
+        alt = ri % 2 == 1
+        for ci, col in enumerate(export_cols, 1):
+            val = row[col]
+            if pd.isna(val): val = None
+            _data_cell(ws_data, er, ci, val, alt=alt)
+
+    ws_data.freeze_panes = "A6"
+    ws_data.auto_filter.ref = f"A5:{get_column_letter(len(export_cols))}5"
+    n_data_rows = len(df_export)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 2: RESUMEN EJECUTIVO (KPIs + Excel formulas referencing DATOS)
+    # ══════════════════════════════════════════════════════════════════════════
+    ws_res = wb.create_sheet("RESUMEN EJECUTIVO")
+    ws_res.sheet_view.showGridLines = False
+    _title_block(ws_res, f"RESUMEN EJECUTIVO – {ciudad}",
+                 "Indicadores clave calculados dinámicamente desde la base de datos", n_cols=14)
+
+    # -- Column definitions for DATOS sheet references --
+    # Find column indices in export_cols
+    def _col(name):
+        try: return get_column_letter(export_cols.index(name) + 1)
+        except: return "A"
+
+    c_carrier   = _col("CARRIER")
+    c_pal       = _col("NO. DE PALLET")
+    c_est_sal   = _col("ESTATUS SALIDA")
+    c_dias      = _col("DIAS INV.")
+    c_tipo_mat  = _col("TIPO DE MATERIAL")
+    c_clasif    = _col("CLASIFICACION DE MATERIAL")
+    c_exist     = _col("EXISTENCIA REAL")
+    c_pal_sal   = _col("PALLETS SALIDA")
+    data_range  = f"DATOS!{c_carrier}6:{c_carrier}{5+n_data_rows}"
+
+    # KPI Section
+    def _kpi_block(ws, row, col, label, formula, fmt="0", note=""):
+        ws.merge_cells(start_row=row, start_column=col,
+                       end_row=row,   end_column=col+2)
+        c = ws.cell(row=row, column=col, value=label)
+        c.font = _font(bold=True, size=9, color=C_BLUE); c.alignment = _lft()
+
+        ws.merge_cells(start_row=row+1, start_column=col,
+                       end_row=row+1,   end_column=col+2)
+        c2 = ws.cell(row=row+1, column=col, value=formula)
+        c2.font   = _font(bold=True, size=18, color=C_BLUE)
+        c2.fill   = _fill(C_LGRAY); c2.alignment = _ctr(); c2.border = BORDER_M
+        c2.number_format = fmt
+        if note:
+            ws.merge_cells(start_row=row+2, start_column=col,
+                           end_row=row+2,   end_column=col+2)
+            c3 = ws.cell(row=row+2, column=col, value=note)
+            c3.font = _font(bold=False, size=8, color="888888"); c3.alignment = _ctr()
+        return c2
+
+    # Row 5: section title
+    ws_res.merge_cells("A5:N5")
+    t = ws_res["A5"]; t.value = "▌ INDICADORES CLAVE DE DESEMPEÑO"
+    t.font = _font(bold=True, size=11, color=C_BLUE); t.alignment = _lft()
+    ws_res.row_dimensions[5].height = 22
+
+    # Set column widths
+    for ci in range(1, 15):
+        ws_res.column_dimensions[get_column_letter(ci)].width = 12
+
+    # KPI row 1 (row 6-8): Pallets activos | M2 | % Ocupación | Capacidad | Días prom
+    r = 6
+    # Total pallets activos (EXISTENCIA REAL = 1)
+    pal_formula = f'=SUMPRODUCT((DATOS!{c_exist}6:DATOS!{c_exist}{5+n_data_rows}=1)*(ISNUMBER(DATOS!{c_pal}6:DATOS!{c_pal}{5+n_data_rows})*IFERROR(VALUE(DATOS!{c_pal}6:DATOS!{c_pal}{5+n_data_rows}),0)))'
+    _kpi_block(ws_res, r, 1,  "📦 PALLETS ACTIVOS",        pal_formula, "0,0")
+    _kpi_block(ws_res, r, 5,  "📊 TOTAL REGISTROS",        f'=COUNTA(DATOS!{c_carrier}6:DATOS!{c_carrier}{5+n_data_rows})', "0,0")
+    _kpi_block(ws_res, r, 9,  "📤 SALIDAS TOTALES",        f'=COUNTIF(DATOS!{c_est_sal}6:DATOS!{c_est_sal}{5+n_data_rows},"SALIDA")', "0,0")
+    _kpi_block(ws_res, r, 12, "🔄 DEVOLUCIONES",           f'=COUNTIF(DATOS!ESTATUS6:DATOS!ESTATUS{5+n_data_rows},"DEVOLUCION")', "0,0")
+
+    ws_res.row_dimensions[6].height = 16
+    ws_res.row_dimensions[7].height = 36
+    ws_res.row_dimensions[8].height = 14
+
+    r = 10
+    _kpi_block(ws_res, r, 1,  "⏱️ DÍAS PROM. EN INVENTARIO", f'=IFERROR(AVERAGEIF(DATOS!{c_exist}6:DATOS!{c_exist}{5+n_data_rows},1,DATOS!{c_dias}6:DATOS!{c_dias}{5+n_data_rows}),0)', "0.0")
+    _kpi_block(ws_res, r, 5,  "⏳ MÁXIMO DÍAS EN INV.",      f'=IFERROR(MAXIFS(DATOS!{c_dias}6:DATOS!{c_dias}{5+n_data_rows},DATOS!{c_exist}6:DATOS!{c_exist}{5+n_data_rows},1),0)',     "0")
+    _kpi_block(ws_res, r, 9,  "📅 DÍAS PROM. ROTACIÓN",     f'=IFERROR(AVERAGE(DATOS!{"DIAS QUE DURO EN INVENTARIO" and _col("DIAS QUE DURO EN INVENTARIO")}6:DATOS!{_col("DIAS QUE DURO EN INVENTARIO")}{5+n_data_rows}),0)', "0.0", "solo items con salida")
+    _kpi_block(ws_res, r, 12, "🏭 CAPACIDAD (m²)",          cap, "0,0")
+
+    ws_res.row_dimensions[10].height = 16
+    ws_res.row_dimensions[11].height = 36
+    ws_res.row_dimensions[12].height = 14
+
+    # Separator
+    r = 14
+    ws_res.merge_cells(f"A{r}:N{r}")
+    t = ws_res[f"A{r}"]; t.value = "▌ BALANCE POR CARRIER"
+    t.font = _font(bold=True, size=11, color=C_BLUE); t.alignment = _lft()
+    ws_res.row_dimensions[r].height = 22
+
+    # Balance table per carrier with Excel formulas
+    r = 15
+    hdrs_bal = ["CARRIER","ENTRADAS","SALIDAS","BALANCE NETO",
+                "% SALIDA","PALLETS ACTIVOS","DÍAS PROM INV","DEVOL."]
+    for ci, h in enumerate(hdrs_bal, 1):
+        _hdr_cell(ws_res, r, ci, h, bg=C_LIGHT)
+
+    carrier_col_idx = export_cols.index("CARRIER") + 1
+    exist_col_idx   = export_cols.index("EXISTENCIA REAL") + 1 if "EXISTENCIA REAL" in export_cols else 1
+    est_sal_idx     = export_cols.index("ESTATUS SALIDA") + 1 if "ESTATUS SALIDA" in export_cols else 1
+    dias_idx        = export_cols.index("DIAS INV.") + 1 if "DIAS INV." in export_cols else 1
+    estatus_idx     = export_cols.index("ESTATUS") + 1 if "ESTATUS" in export_cols else 1
+
+    cc = get_column_letter(carrier_col_idx)
+    ce = get_column_letter(exist_col_idx)
+    ces= get_column_letter(est_sal_idx)
+    cd = get_column_letter(dias_idx)
+    cst= get_column_letter(estatus_idx)
+    data_r = f"6:{5+n_data_rows}"
+
+    for ri, car in enumerate(carriers):
+        er  = 16 + ri
+        alt = ri % 2 == 1
+        entradas = f'=COUNTIF(DATOS!{cc}{data_r.split(":")[0]}:DATOS!{cc}{data_r.split(":")[1]},"{car}")'
+        salidas  = f'=COUNTIFS(DATOS!{cc}{data_r.split(":")[0]}:DATOS!{cc}{data_r.split(":")[1]},"{car}",DATOS!{ces}{data_r.split(":")[0]}:DATOS!{ces}{data_r.split(":")[1]},"SALIDA")'
+        activos  = f'=COUNTIFS(DATOS!{cc}{data_r.split(":")[0]}:DATOS!{cc}{data_r.split(":")[1]},"{car}",DATOS!{ce}{data_r.split(":")[0]}:DATOS!{ce}{data_r.split(":")[1]},1)'
+        devoluc  = f'=COUNTIFS(DATOS!{cc}{data_r.split(":")[0]}:DATOS!{cc}{data_r.split(":")[1]},"{car}",DATOS!{cst}{data_r.split(":")[0]}:DATOS!{cst}{data_r.split(":")[1]},"DEVOLUCION")'
+        dias_pr  = f'=IFERROR(AVERAGEIFS(DATOS!{cd}{data_r.split(":")[0]}:DATOS!{cd}{data_r.split(":")[1]},DATOS!{cc}{data_r.split(":")[0]}:DATOS!{cc}{data_r.split(":")[1]},"{car}",DATOS!{ce}{data_r.split(":")[0]}:DATOS!{ce}{data_r.split(":")[1]},1),"-")'
+
+        ent_ref  = get_column_letter(2)
+        sal_ref  = get_column_letter(3)
+        bal_f    = f"={get_column_letter(2)}{er}-{get_column_letter(3)}{er}"
+        pct_f    = f'=IFERROR({get_column_letter(3)}{er}/{get_column_letter(2)}{er},0)'
+
+        vals = [car, entradas, salidas, bal_f, pct_f, activos, dias_pr, devoluc]
+        fmts = [None, "0,0", "0,0", "0,0", "0.0%", "0,0", "0.0", "0,0"]
+        for ci, (v, f) in enumerate(zip(vals, fmts), 1):
+            c = _data_cell(ws_res, er, ci, v, alt=alt)
+            if f: c.number_format = f
+            if ci == 4:  # Balance neto — color
+                c.font = _font(bold=True, color="222222")
+            if ci == 5:
+                c.number_format = "0.0%"
+
+    # Total row
+    tr = 16 + len(carriers)
+    _hdr_cell(ws_res, tr, 1, "TOTAL GENERAL", bg=C_BLUE)
+    for ci in range(2, 9):
+        if ci <= 4:
+            c = ws_res.cell(row=tr, column=ci,
+                            value=f'=SUM({get_column_letter(ci)}16:{get_column_letter(ci)}{tr-1})')
+        elif ci == 5:
+            c = ws_res.cell(row=tr, column=ci,
+                            value=f'=IFERROR(C{tr}/B{tr},0)')
+            c.number_format = "0.0%"
+        else:
+            c = ws_res.cell(row=tr, column=ci,
+                            value=f'=SUM({get_column_letter(ci)}16:{get_column_letter(ci)}{tr-1})')
+        c.font = _font(bold=True, color=C_WHITE); c.fill = _fill(C_BLUE)
+        c.border = BORDER; c.alignment = _ctr()
+
+    ws_res.row_dimensions[15].height = 28
+    for rr in range(16, tr+1):
+        ws_res.row_dimensions[rr].height = 22
+
+    # ── Balance por tipo de material (with formulas) ─────────────────────────
+    c_tipo_idx = export_cols.index("TIPO DE MATERIAL") + 1 if "TIPO DE MATERIAL" in export_cols else 1
+    ct = get_column_letter(c_tipo_idx)
+
+    r = tr + 3
+    ws_res.merge_cells(f"A{r}:N{r}")
+    t = ws_res[f"A{r}"]; t.value = "▌ DISTRIBUCIÓN POR TIPO DE MATERIAL"
+    t.font = _font(bold=True, size=11, color=C_BLUE); t.alignment = _lft()
+
+    r += 1
+    mat_hdrs = ["TIPO DE MATERIAL","ENTRADAS TOTALES","EN INVENTARIO","SALIDAS","% ROTACIÓN","DÍAS PROM. INV."]
+    for ci, h in enumerate(mat_hdrs, 1):
+        _hdr_cell(ws_res, r, ci, h, bg=C_PURPLE)
+
+    for ri, tipo in enumerate(tipos):
+        er  = r + 1 + ri
+        alt = ri % 2 == 1
+        tipo_safe = tipo if tipo else "SIN CLASIFICAR"
+        entradas_t = f'=COUNTIF(DATOS!{ct}{data_r.split(":")[0]}:DATOS!{ct}{data_r.split(":")[1]},"{tipo_safe}")'
+        activos_t  = f'=COUNTIFS(DATOS!{ct}{data_r.split(":")[0]}:DATOS!{ct}{data_r.split(":")[1]},"{tipo_safe}",DATOS!{ce}{data_r.split(":")[0]}:DATOS!{ce}{data_r.split(":")[1]},1)'
+        salidas_t  = f'=COUNTIFS(DATOS!{ct}{data_r.split(":")[0]}:DATOS!{ct}{data_r.split(":")[1]},"{tipo_safe}",DATOS!{ces}{data_r.split(":")[0]}:DATOS!{ces}{data_r.split(":")[1]},"SALIDA")'
+        pct_t      = f'=IFERROR(D{er}/B{er},0)'
+        dias_t     = f'=IFERROR(AVERAGEIFS(DATOS!{cd}{data_r.split(":")[0]}:DATOS!{cd}{data_r.split(":")[1]},DATOS!{ct}{data_r.split(":")[0]}:DATOS!{ct}{data_r.split(":")[1]},"{tipo_safe}",DATOS!{ce}{data_r.split(":")[0]}:DATOS!{ce}{data_r.split(":")[1]},1),"-")'
+        vals = [tipo_safe, entradas_t, activos_t, salidas_t, pct_t, dias_t]
+        fmts = [None, "0,0", "0,0", "0,0", "0.0%", "0.0"]
+        for ci, (v, f) in enumerate(zip(vals, fmts), 1):
+            c = _data_cell(ws_res, er, ci, v, alt=alt)
+            if f: c.number_format = f
+        ws_res.row_dimensions[er].height = 20
+
+    # ── AGING ANALYSIS ───────────────────────────────────────────────────────
+    r2 = r + 1 + len(tipos) + 3
+    ws_res.merge_cells(f"A{r2}:N{r2}")
+    t = ws_res[f"A{r2}"]; t.value = "▌ ANÁLISIS DE ANTIGÜEDAD (AGING) – INVENTARIO ACTIVO"
+    t.font = _font(bold=True, size=11, color=C_BLUE); t.alignment = _lft()
+
+    aging_buckets = [
+        ("0–15 días",   0,  15),
+        ("16–30 días",  16, 30),
+        ("31–60 días",  31, 60),
+        ("61–90 días",  61, 90),
+        ("91–180 días", 91, 180),
+        ("+180 días",   181, 99999),
+    ]
+    r2 += 1
+    aging_hdrs = ["RANGO","PALLETS","% DEL TOTAL","RIESGO"]
+    bg_aging   = [C_GREEN, C_GREEN, C_AMBER, C_AMBER, C_RED, C_DRED]
+    for ci, h in enumerate(aging_hdrs, 1):
+        _hdr_cell(ws_res, r2, ci, h, bg=C_BLUE)
+
+    aging_val_rows = []
+    for ri, (label, lo, hi) in enumerate(aging_buckets):
+        er  = r2 + 1 + ri
+        alt = ri % 2 == 1
+        hi_cap = min(hi, 99998)
+        cnt = f'=COUNTIFS(DATOS!{cd}{data_r.split(":")[0]}:DATOS!{cd}{data_r.split(":")[1]},">={lo}",DATOS!{cd}{data_r.split(":")[0]}:DATOS!{cd}{data_r.split(":")[1]},"<={hi_cap}",DATOS!{ce}{data_r.split(":")[0]}:DATOS!{ce}{data_r.split(":")[1]},1)'
+        pct = f'=IFERROR(B{er}/SUM(B{r2+1}:B{r2+6}),0)'
+        risk = ["FRESCO","FRESCO","ATENCIÓN","ATENCIÓN","CRÍTICO","URGENTE"][ri]
+        for ci, v in enumerate([label, cnt, pct, risk], 1):
+            c = _data_cell(ws_res, er, ci, v, alt=alt)
+            if ci == 3: c.number_format = "0.0%"
+            if ci == 4:
+                c.font = _font(bold=True, color=C_WHITE)
+                c.fill = _fill(bg_aging[ri])
+        ws_res.row_dimensions[er].height = 20
+        aging_val_rows.append(er)
+
+    # ── Chart: Aging bar embedded in RESUMEN ─────────────────────────────────
+    if aging_val_rows:
+        aging_chart = BarChart()
+        aging_chart.type = "col"
+        aging_chart.title = f"Aging Inventario – {ciudad}"
+        aging_chart.style = 10
+        aging_chart.y_axis.title = "Pallets"
+        aging_chart.x_axis.title = "Rango de días"
+        aging_chart.width  = 14
+        aging_chart.height = 10
+
+        labels = Reference(ws_res, min_col=1, min_row=r2+1, max_row=r2+6)
+        data_c = Reference(ws_res, min_col=2, min_row=r2, max_row=r2+6)
+        aging_chart.add_data(data_c, titles_from_data=True)
+        aging_chart.set_categories(labels)
+        colors_aging = ["1E8449","1E8449","E67E22","E67E22","C0392B","7B241C"]
+        for i, ser in enumerate(aging_chart.series):
+            ser.graphicalProperties.solidFill = colors_aging[min(i, len(colors_aging)-1)]
+        ws_res.add_chart(aging_chart, f"F{r2}")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 3: TENDENCIA MENSUAL
+    # ══════════════════════════════════════════════════════════════════════════
+    ws_trend = wb.create_sheet("TENDENCIA MENSUAL")
+    ws_trend.sheet_view.showGridLines = False
+    _title_block(ws_trend, f"TENDENCIA MENSUAL – {ciudad}",
+                 "Evolución de entradas, salidas y balance neto mes a mes", n_cols=12)
+
+    # Build monthly aggregation in Python (needed for chart data)
+    df_xd["_MES_STR"] = df_xd["_FECHA_ING"].dt.strftime("%Y-%m")
+    df_xd["_MES_STR"] = df_xd["_MES_STR"].fillna("DESCONOCIDO")
+    meses_valid = df_xd[df_xd["_MES_STR"] != "DESCONOCIDO"]["_MES_STR"]
+    meses_range = sorted(meses_valid.unique())
+
+    # Monthly table
+    r = 5
+    trend_hdrs = ["MES"] + [f"ENT.\n{car}" for car in carriers] +                  ["TOTAL ENT."] + [f"SAL.\n{car}" for car in carriers] +                  ["TOTAL SAL.", "BALANCE"]
+    for ci, h in enumerate(trend_hdrs, 1):
+        _hdr_cell(ws_trend, r, ci, h, bg=C_BLUE)
+        ws_trend.column_dimensions[get_column_letter(ci)].width = 12
+    ws_trend.column_dimensions["A"].width = 11
+
+    for ri, mes in enumerate(meses_range):
+        er  = 6 + ri
+        alt = ri % 2 == 1
+        ws_trend.cell(row=er, column=1, value=mes).alignment = _ctr()
+        ws_trend.cell(row=er, column=1).fill = _fill(C_LGRAY if alt else C_WHITE)
+
+        ent_vals = []
+        for ci, car in enumerate(carriers, 2):
+            n = len(df_xd[(df_xd["_MES_STR"]==mes) & (df_xd["CARRIER"]==car)])
+            c = ws_trend.cell(row=er, column=ci, value=n)
+            c.fill = _fill(C_LGRAY if alt else C_WHITE); c.alignment = _ctr()
+            c.number_format = "0"; c.border = BORDER
+            ent_vals.append(n)
+
+        tot_ent_col = 2 + len(carriers)
+        tot_ent = f'=SUM(B{er}:{get_column_letter(tot_ent_col-1)}{er})'
+        c = ws_trend.cell(row=er, column=tot_ent_col, value=tot_ent)
+        c.font = _font(bold=True, color="222222")
+        c.fill = _fill(C_MGRAY); c.alignment = _ctr(); c.border = BORDER
+        c.number_format = "0"
+
+        sal_vals = []
+        for ci2, car in enumerate(carriers, tot_ent_col+1):
+            n = len(df_xd[(df_xd["_MES_STR"]==mes) &
+                          (df_xd["CARRIER"]==car) &
+                          (df_xd["_ES_SALIDA"]==True)])
+            c = ws_trend.cell(row=er, column=ci2, value=n)
+            c.fill = _fill(C_LGRAY if alt else C_WHITE); c.alignment = _ctr()
+            c.number_format = "0"; c.border = BORDER
+            sal_vals.append(n)
+
+        tot_sal_col = tot_ent_col + 1 + len(carriers)
+        tot_sal = f'=SUM({get_column_letter(tot_ent_col+1)}{er}:{get_column_letter(tot_sal_col-1)}{er})'
+        c = ws_trend.cell(row=er, column=tot_sal_col, value=tot_sal)
+        c.font = _font(bold=True, color="222222")
+        c.fill = _fill(C_MGRAY); c.alignment = _ctr(); c.border = BORDER
+        c.number_format = "0"
+
+        bal_col = tot_sal_col + 1
+        bal_f = f'={get_column_letter(tot_ent_col)}{er}-{get_column_letter(tot_sal_col)}{er}'
+        c = ws_trend.cell(row=er, column=bal_col, value=bal_f)
+        c.font = _font(bold=True, color="222222")
+        c.fill = _fill("D5F5E3" if True else "FADBD8")
+        c.number_format = "0"; c.border = BORDER; c.alignment = _ctr()
+
+        ws_trend.row_dimensions[er].height = 20
+
+    n_mes_rows = len(meses_range)
+    last_mes_row = 5 + n_mes_rows
+
+    # Totals
+    tr_mes = last_mes_row + 1
+    _hdr_cell(ws_trend, tr_mes, 1, "TOTALES", bg=C_BLUE)
+    for ci in range(2, len(trend_hdrs)+1):
+        c = ws_trend.cell(row=tr_mes, column=ci,
+                          value=f'=SUM({get_column_letter(ci)}6:{get_column_letter(ci)}{last_mes_row})')
+        c.font = _font(bold=True, color=C_WHITE); c.fill = _fill(C_BLUE)
+        c.border = BORDER; c.alignment = _ctr(); c.number_format = "0"
+
+    ws_trend.row_dimensions[5].height = 28
+    ws_trend.freeze_panes = "B6"
+
+    # Chart: Line chart entradas vs salidas mensual
+    if n_mes_rows >= 2:
+        line_chart = LineChart()
+        line_chart.title = f"Tendencia Mensual – {ciudad}"
+        line_chart.style = 10
+        line_chart.y_axis.title = "Unidades"
+        line_chart.x_axis.title = "Mes"
+        line_chart.width = 22; line_chart.height = 12
+
+        cats = Reference(ws_trend, min_col=1, min_row=6, max_row=5+n_mes_rows)
+        ent_data = Reference(ws_trend, min_col=tot_ent_col, min_row=5, max_row=5+n_mes_rows)
+        sal_data = Reference(ws_trend, min_col=tot_sal_col, min_row=5, max_row=5+n_mes_rows)
+
+        line_chart.add_data(ent_data, titles_from_data=True)
+        line_chart.add_data(sal_data, titles_from_data=True)
+        line_chart.set_categories(cats)
+        line_chart.series[0].graphicalProperties.line.solidFill = C_BLUE
+        line_chart.series[0].graphicalProperties.line.width     = 20000
+        if len(line_chart.series) > 1:
+            line_chart.series[1].graphicalProperties.line.solidFill = C_RED
+            line_chart.series[1].graphicalProperties.line.width     = 20000
+
+        ws_trend.add_chart(line_chart, f"A{tr_mes+3}")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 4: ANÁLISIS POR CARRIER (one section per carrier)
+    # ══════════════════════════════════════════════════════════════════════════
+    ws_car = wb.create_sheet("ANÁLISIS CARRIER")
+    ws_car.sheet_view.showGridLines = False
+    _title_block(ws_car, f"ANÁLISIS POR CARRIER – {ciudad}",
+                 "Detalle de entradas, salidas y distribución por tipo de material por carrier", n_cols=14)
+
+    r_car = 5
+    for car in carriers:
+        df_car = df_xd[df_xd["CARRIER"] == car]
+        df_car_act = df_car[~df_car["_ES_SALIDA"]]
+        df_car_sal = df_car[df_car["_ES_SALIDA"]]
+
+        # Carrier header
+        ws_car.row_dimensions[r_car].height = 24
+        ws_car.merge_cells(f"A{r_car}:N{r_car}")
+        c = ws_car[f"A{r_car}"]
+        c.value = f"▌ CARRIER: {car}"
+        c.font  = _font(bold=True, size=12, color=C_WHITE)
+        c.fill  = _fill(C_BLUE if car == "AT&T" else C_PURPLE)
+        c.alignment = _lft()
+        r_car += 1
+
+        # Mini KPIs
+        kpi_data = [
+            ("Entradas totales", len(df_car)),
+            ("En inventario",    len(df_car_act)),
+            ("Salidas",          len(df_car_sal)),
+            ("% Rotación",       f"{len(df_car_sal)/len(df_car)*100:.1f}%" if len(df_car)>0 else "0%"),
+            ("Días prom. inv.",  f"{df_car_act['_DIAS'].median():.0f}" if len(df_car_act)>0 else "-"),
+        ]
+        for ci, (lbl, val) in enumerate(kpi_data, 1):
+            ws_car.cell(row=r_car,   column=ci*2-1, value=lbl).font  = _font(bold=True, size=8, color=C_BLUE)
+            c = ws_car.cell(row=r_car+1, column=ci*2-1, value=val)
+            c.font = _font(bold=True, size=14, color=C_BLUE)
+            c.fill = _fill(C_LGRAY); c.border = BORDER_M; c.alignment = _ctr()
+            ws_car.merge_cells(start_row=r_car+1, start_column=ci*2-1,
+                               end_row=r_car+1,   end_column=ci*2)
+        r_car += 3
+
+        # By tipo de material
+        _hdr_cell(ws_car, r_car, 1, "TIPO DE MATERIAL", bg=C_LIGHT)
+        _hdr_cell(ws_car, r_car, 2, "ENTRADAS",         bg=C_LIGHT)
+        _hdr_cell(ws_car, r_car, 3, "EN INVENTARIO",    bg=C_LIGHT)
+        _hdr_cell(ws_car, r_car, 4, "SALIDAS",          bg=C_LIGHT)
+        _hdr_cell(ws_car, r_car, 5, "% ROTACIÓN",       bg=C_LIGHT)
+        _hdr_cell(ws_car, r_car, 6, "DÍAS PROM. INV.",  bg=C_LIGHT)
+        r_car += 1
+
+        tipos_car = sorted(df_car["TIPO DE MATERIAL"].fillna("SIN CLASIFICAR").unique())
+        for ri, tipo in enumerate(tipos_car):
+            alt   = ri % 2 == 1
+            df_t  = df_car[df_car["TIPO DE MATERIAL"].fillna("SIN CLASIFICAR") == tipo]
+            df_ta = df_t[~df_t["_ES_SALIDA"]]
+            df_ts = df_t[df_t["_ES_SALIDA"]]
+            n_ent = len(df_t); n_act = len(df_ta); n_sal = len(df_ts)
+            pct_r = n_sal/n_ent if n_ent > 0 else 0
+            dias_ = df_ta["_DIAS"].median() if len(df_ta) > 0 else None
+
+            vals = [tipo, n_ent, n_act, n_sal, pct_r, dias_]
+            fmts = [None, "0", "0", "0", "0.0%", "0.0"]
+            for ci, (v, f) in enumerate(zip(vals, fmts), 1):
+                c = _data_cell(ws_car, r_car, ci, v, alt=alt)
+                if f: c.number_format = f
+            ws_car.row_dimensions[r_car].height = 20
+            r_car += 1
+
+        # By clasificacion
+        r_car += 1
+        _hdr_cell(ws_car, r_car, 1, "CLASIFICACIÓN",      bg=C_ACCENT)
+        _hdr_cell(ws_car, r_car, 2, "ENTRADAS",            bg=C_ACCENT)
+        _hdr_cell(ws_car, r_car, 3, "EN INVENTARIO",       bg=C_ACCENT)
+        _hdr_cell(ws_car, r_car, 4, "TARIMA MÁS FRECUENTE",bg=C_ACCENT)
+        r_car += 1
+        clasifs_car = sorted(df_car["CLASIFICACION DE MATERIAL"].fillna("OTRO").unique())
+        for ri, cl in enumerate(clasifs_car):
+            alt  = ri % 2 == 1
+            df_c = df_car[df_car["CLASIFICACION DE MATERIAL"].fillna("OTRO") == cl]
+            df_ca= df_c[~df_c["_ES_SALIDA"]]
+            if len(df_c) > 0 and "TIPO DE PALLET" in df_c.columns:
+                top_pallet = df_c["TIPO DE PALLET"].value_counts().index[0] if len(df_c["TIPO DE PALLET"].dropna()) > 0 else "-"
+            else:
+                top_pallet = "-"
+            vals = [cl, len(df_c), len(df_ca), top_pallet]
+            for ci, v in enumerate(vals, 1):
+                _data_cell(ws_car, r_car, ci, v, alt=alt)
+            ws_car.row_dimensions[r_car].height = 20
+            r_car += 1
+
+        # Pie chart for this carrier
+        if len(tipos_car) >= 2:
+            pie = PieChart()
+            pie.title  = f"{car} – Entradas por Tipo de Material"
+            pie.style  = 10
+            pie.width  = 12; pie.height = 8
+
+            tipo_counts = df_car["TIPO DE MATERIAL"].fillna("SIN CLASIFICAR").value_counts()
+            # Write a small helper range for the chart
+            chart_row_start = r_car + 1
+            ws_car.cell(row=chart_row_start, column=8, value="Tipo").font = _font(bold=True, color=C_BLUE)
+            ws_car.cell(row=chart_row_start, column=9, value="N").font   = _font(bold=True, color=C_BLUE)
+            for pi, (tp, cnt) in enumerate(tipo_counts.items(), 1):
+                ws_car.cell(row=chart_row_start+pi, column=8, value=tp)
+                ws_car.cell(row=chart_row_start+pi, column=9, value=cnt)
+
+            pie_labels = Reference(ws_car, min_col=8,
+                                   min_row=chart_row_start+1,
+                                   max_row=chart_row_start+len(tipo_counts))
+            pie_data   = Reference(ws_car, min_col=9,
+                                   min_row=chart_row_start,
+                                   max_row=chart_row_start+len(tipo_counts))
+            pie.add_data(pie_data, titles_from_data=True)
+            pie.set_categories(pie_labels)
+            ws_car.add_chart(pie, f"J{r_car}")
+
+        r_car += 3
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 5: TOP SITES & ASP
+    # ══════════════════════════════════════════════════════════════════════════
+    ws_top = wb.create_sheet("TOP SITIOS & ASP")
+    ws_top.sheet_view.showGridLines = False
+    _title_block(ws_top, f"TOP SITIOS Y ASP – {ciudad}",
+                 "Sitios y transportistas con más movimientos", n_cols=10)
+
+    # Top 20 sites by entries
+    top_sites = df_xd.groupby("ID SITIO").agg(
+        Entradas=("CARRIER","count"),
+        En_Inventario=("EXISTENCIA REAL", lambda x: (x==1).sum()),
+        Dias_Prom=("_DIAS", "median"),
+    ).sort_values("Entradas", ascending=False).head(20).reset_index()
+
+    r = 5
+    ws_top.merge_cells(f"A{r}:J{r}")
+    t = ws_top[f"A{r}"]; t.value = "▌ TOP 20 SITIOS POR ENTRADAS"
+    t.font = _font(bold=True, size=11, color=C_BLUE); t.alignment = _lft()
+    r += 1
+    site_hdrs = ["ID SITIO","NOMBRE SITIO","ENTRADAS","EN INV.","DÍAS PROM.","CARRIER PRINCIPAL"]
+    for ci, h in enumerate(site_hdrs, 1):
+        _hdr_cell(ws_top, r, ci, h, bg=C_LIGHT)
+        ws_top.column_dimensions[get_column_letter(ci)].width = 18
+    r += 1
+    for ri, row_d in enumerate(top_sites.itertuples(), 0):
+        alt = ri % 2 == 1
+        site_id = row_d._1
+        site_name = df_xd[df_xd["ID SITIO"]==site_id]["NOMBRE DE SITIO"].dropna().iloc[0]                     if len(df_xd[df_xd["ID SITIO"]==site_id]["NOMBRE DE SITIO"].dropna())>0 else ""
+        top_car = df_xd[df_xd["ID SITIO"]==site_id]["CARRIER"].value_counts().index[0]                   if len(df_xd[df_xd["ID SITIO"]==site_id])>0 else ""
+        vals = [site_id, site_name, row_d.Entradas,
+                int(row_d.En_Inventario), round(row_d.Dias_Prom,0) if pd.notna(row_d.Dias_Prom) else None, top_car]
+        for ci, v in enumerate(vals, 1):
+            _data_cell(ws_top, r, ci, v, alt=alt)
+        ws_top.row_dimensions[r].height = 20
+        r += 1
+
+    # Top ASP
+    r += 2
+    ws_top.merge_cells(f"A{r}:J{r}")
+    t = ws_top[f"A{r}"]; t.value = "▌ TOP ASP (TRANSPORTISTAS) – SALIDAS"
+    t.font = _font(bold=True, size=11, color=C_BLUE); t.alignment = _lft()
+    r += 1
+
+    if "NOMBRE ASP" in df_xd.columns:
+        top_asp = df_xd[df_xd["_ES_SALIDA"]].groupby("NOMBRE ASP").agg(
+            Salidas=("CARRIER","count"),
+        ).sort_values("Salidas", ascending=False).head(15).reset_index()
+
+        asp_hdrs = ["NOMBRE ASP","SALIDAS REALIZADAS","% DEL TOTAL"]
+        for ci, h in enumerate(asp_hdrs, 1):
+            _hdr_cell(ws_top, r, ci, h, bg=C_GREEN)
+        r += 1
+        tot_sal_asp = len(df_xd[df_xd["_ES_SALIDA"]])
+        for ri, row_d in enumerate(top_asp.itertuples(), 0):
+            alt = ri % 2 == 1
+            pct_asp = row_d.Salidas / tot_sal_asp if tot_sal_asp > 0 else 0
+            vals = [row_d._1, row_d.Salidas, pct_asp]
+            fmts = [None, "0", "0.0%"]
+            for ci, (v, f) in enumerate(zip(vals, fmts), 1):
+                c = _data_cell(ws_top, r, ci, v, alt=alt)
+                if f: c.number_format = f
+            ws_top.row_dimensions[r].height = 20
+            r += 1
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # SHEET 6: ESTADÍSTICAS Y TENDENCIA (regression + stats)
+    # ══════════════════════════════════════════════════════════════════════════
+    ws_stat = wb.create_sheet("ESTADÍSTICAS")
+    ws_stat.sheet_view.showGridLines = False
+    _title_block(ws_stat, f"ESTADÍSTICAS AVANZADAS – {ciudad}",
+                 "Análisis de tendencia, regresión lineal y proyecciones", n_cols=12)
+
+    r = 5
+    # Regression on monthly data
+    df_mes = df_xd[df_xd["_MES_STR"] != "DESCONOCIDO"].groupby("_MES_STR").size().reset_index(name="entradas")
+    df_mes = df_mes.sort_values("_MES_STR").reset_index(drop=True)
+    df_mes["x"] = range(len(df_mes))
+
+    # Write regression data
+    ws_stat.merge_cells(f"A{r}:L{r}")
+    t = ws_stat[f"A{r}"]; t.value = "▌ REGRESIÓN LINEAL – ENTRADAS MENSUALES"
+    t.font = _font(bold=True, size=11, color=C_BLUE); t.alignment = _lft()
+    r += 1
+
+    reg_hdrs = ["MES","N° PERÍODO","ENTRADAS","TENDENCIA (LINREG)","DESV. VS TENDENCIA"]
+    for ci, h in enumerate(reg_hdrs, 1):
+        _hdr_cell(ws_stat, r, ci, h, bg=C_BLUE)
+        ws_stat.column_dimensions[get_column_letter(ci)].width = 18
+    r += 1
+
+    reg_data_start = r
+    for ri, row_d in df_mes.iterrows():
+        er  = r + ri
+        alt = ri % 2 == 1
+        ws_stat.cell(row=er, column=1, value=row_d["_MES_STR"])
+        ws_stat.cell(row=er, column=2, value=int(row_d["x"]))
+        ws_stat.cell(row=er, column=3, value=int(row_d["entradas"]))
+        # TREND formula using FORECAST or LINEST
+        if ri >= 2:
+            trend_f = (f'=IFERROR(FORECAST(B{er},$C${reg_data_start}:$C${reg_data_start+len(df_mes)-1},'
+                       f'$B${reg_data_start}:$B${reg_data_start+len(df_mes)-1}),"-")')
+        else:
+            trend_f = f'=C{er}'
+        c_trend = ws_stat.cell(row=er, column=4, value=trend_f)
+        c_trend.number_format = "0.0"
+        dev_f = f'=IFERROR(C{er}-D{er},"-")'
+        c_dev = ws_stat.cell(row=er, column=5, value=dev_f)
+        c_dev.number_format = "0"
+
+        for ci in range(1, 6):
+            c = ws_stat.cell(row=er, column=ci)
+            c.fill   = _fill(C_LGRAY if alt else C_WHITE)
+            c.border = BORDER
+            if ci > 1: c.alignment = _ctr()
+        ws_stat.row_dimensions[er].height = 20
+
+    reg_data_end = r + len(df_mes) - 1
+
+    # Stats block
+    stat_r = reg_data_end + 3
+    ws_stat.merge_cells(f"A{stat_r}:L{stat_r}")
+    t = ws_stat[f"A{stat_r}"]; t.value = "▌ ESTADÍSTICAS DESCRIPTIVAS – DÍAS EN INVENTARIO (ACTIVOS)"
+    t.font = _font(bold=True, size=11, color=C_BLUE); t.alignment = _lft()
+    stat_r += 1
+
+    dias_activos = df_activo["_DIAS"].dropna()
+    stat_vals = [
+        ("Media (días)",      round(dias_activos.mean(),1)       if len(dias_activos) > 0 else 0),
+        ("Mediana (días)",    round(dias_activos.median(),1)     if len(dias_activos) > 0 else 0),
+        ("Desv. estándar",    round(dias_activos.std(),1)        if len(dias_activos) > 0 else 0),
+        ("Percentil 25%",     round(dias_activos.quantile(.25),1)if len(dias_activos) > 0 else 0),
+        ("Percentil 75%",     round(dias_activos.quantile(.75),1)if len(dias_activos) > 0 else 0),
+        ("Percentil 90%",     round(dias_activos.quantile(.90),1)if len(dias_activos) > 0 else 0),
+        ("Máximo (días)",     round(dias_activos.max(),0)        if len(dias_activos) > 0 else 0),
+        ("Items >90 días",    int((dias_activos > 90).sum())     if len(dias_activos) > 0 else 0),
+        ("Items >180 días",   int((dias_activos > 180).sum())    if len(dias_activos) > 0 else 0),
+    ]
+    for ci, (lbl, val) in enumerate(stat_vals, 1):
+        bg = C_RED if ("90" in lbl or "180" in lbl) and val > 0 else C_LGRAY
+        c = ws_stat.cell(row=stat_r,   column=ci, value=lbl)
+        c.font = _font(bold=True, size=9, color=C_BLUE); c.alignment = _ctr()
+        c2 = ws_stat.cell(row=stat_r+1, column=ci, value=val)
+        c2.font = _font(bold=True, size=13, color=C_WHITE if bg==C_RED else C_BLUE)
+        c2.fill = _fill(bg); c2.border = BORDER_M; c2.alignment = _ctr()
+        c2.number_format = "0.0" if isinstance(val, float) else "0"
+        ws_stat.column_dimensions[get_column_letter(ci)].width = 14
+    ws_stat.row_dimensions[stat_r].height   = 16
+    ws_stat.row_dimensions[stat_r+1].height = 32
+
+    # Proyección próximos 3 meses (simple linear)
+    proj_r = stat_r + 4
+    ws_stat.merge_cells(f"A{proj_r}:L{proj_r}")
+    t = ws_stat[f"A{proj_r}"]; t.value = "▌ PROYECCIÓN PRÓXIMOS 3 MESES (REGRESIÓN LINEAL)"
+    t.font = _font(bold=True, size=11, color=C_BLUE); t.alignment = _lft()
+    proj_r += 1
+
+    n_mes = len(df_mes)
+    for pi in range(3):
+        mes_label = (pd.Timestamp.today() + pd.DateOffset(months=pi+1)).strftime("%Y-%m")
+        x_proj = n_mes + pi
+        proj_f = (f'=IFERROR(FORECAST({x_proj},$C${reg_data_start}:$C${reg_data_end},'
+                  f'$B${reg_data_start}:$B${reg_data_end}),"N/D")')
+        ws_stat.cell(row=proj_r, column=1, value="MES PROYECTADO").font = _font(bold=True, color=C_BLUE, size=9)
+        ws_stat.cell(row=proj_r, column=1).alignment = _ctr()
+        ws_stat.cell(row=proj_r+1, column=1, value=mes_label).alignment = _ctr()
+        ws_stat.cell(row=proj_r, column=2+pi*2, value="ENTRADAS PROYECTADAS").font = _font(bold=True, color=C_BLUE, size=9)
+        ws_stat.cell(row=proj_r, column=2+pi*2).alignment = _ctr()
+        c_proj = ws_stat.cell(row=proj_r+1, column=2+pi*2, value=proj_f)
+        c_proj.font = _font(bold=True, size=13, color=C_WHITE)
+        c_proj.fill = _fill(C_ACCENT); c_proj.border = BORDER_M
+        c_proj.alignment = _ctr(); c_proj.number_format = "0"
+
+    # Line chart: trend vs actual
+    if len(df_mes) >= 3:
+        trend_chart = LineChart()
+        trend_chart.title  = f"Tendencia de Entradas – {ciudad}"
+        trend_chart.style  = 10
+        trend_chart.y_axis.title = "Entradas"
+        trend_chart.x_axis.title = "Mes"
+        trend_chart.width  = 22; trend_chart.height = 12
+
+        cats_t = Reference(ws_stat, min_col=1, min_row=reg_data_start, max_row=reg_data_end)
+        real_d = Reference(ws_stat, min_col=3, min_row=reg_data_start-1, max_row=reg_data_end)
+        tren_d = Reference(ws_stat, min_col=4, min_row=reg_data_start-1, max_row=reg_data_end)
+        trend_chart.add_data(real_d, titles_from_data=True)
+        trend_chart.add_data(tren_d, titles_from_data=True)
+        trend_chart.set_categories(cats_t)
+        trend_chart.series[0].graphicalProperties.line.solidFill = C_ACCENT
+        trend_chart.series[0].graphicalProperties.line.width     = 20000
+        if len(trend_chart.series) > 1:
+            trend_chart.series[1].graphicalProperties.line.solidFill = C_RED
+            trend_chart.series[1].graphicalProperties.line.width     = 15000
+            trend_chart.series[1].graphicalProperties.line.dashDot   = "dash"
+
+        ws_stat.add_chart(trend_chart, f"A{proj_r+4}")
+
+    # Save
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def build_crossdock_pdf(df_raw_full, xdock_name, cols):
+    """
+    Build an executive PDF report for a single crossdock with smart analysis.
+    """
+    from reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer,
+                                     Table, TableStyle, PageBreak, HRFlowable,
+                                     KeepTogether)
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib import colors
+    from reportlab.lib.units import cm
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+    from reportlab.lib.pagesizes import A4
+    import pandas as pd, numpy as np
+
+    ciudad    = CIUDAD_MAP.get(xdock_name, xdock_name)
+    cap       = CAPACIDADES.get(xdock_name, 0)
+    fecha_str = datetime.date.today().strftime("%d de %B de %Y")
+    region    = REGION_MAP.get(xdock_name, "")
+
+    def _match_xdock(val):
+        if not val: return False
+        v = str(val).strip()
+        return v == xdock_name or XDOCK_ALIASES.get(norm(v), v) == xdock_name
+
+    df_xd = df_raw_full[df_raw_full["XDOCK"].apply(_match_xdock)].copy()
+    df_xd["_FECHA_ING"] = pd.to_datetime(df_xd["FECHA DE INGRESO"], errors="coerce")
+    df_xd["_NO_PAL"]    = pd.to_numeric(df_xd["NO. DE PALLET"], errors="coerce").fillna(0)
+    df_xd["_DIAS"]      = pd.to_numeric(df_xd["DIAS INV."], errors="coerce")
+    df_xd["_MES_STR"]   = df_xd["_FECHA_ING"].dt.strftime("%Y-%m").fillna("DESCONOCIDO")
+
+    def _is_salida(row):
+        es = str(row.get("ESTATUS SALIDA","")).strip().upper()
+        fd = row.get("FECHA DE SALIDA", None)
+        fd_valid = (fd is not None and
+                    not (isinstance(fd, float) and pd.isna(fd)) and
+                    str(fd).strip() not in ("", "None", "NaT", "nan"))
+        return es == "SALIDA" and fd_valid
+
+    df_xd["_ES_SALIDA"] = df_xd.apply(_is_salida, axis=1)
+    df_activo  = df_xd[~df_xd["_ES_SALIDA"]]
+    df_salidas = df_xd[ df_xd["_ES_SALIDA"]]
+    carriers   = sorted(df_xd["CARRIER"].dropna().unique())
+
+    RL_BLUE   = colors.HexColor("#1A3A6B")
+    RL_LIGHT  = colors.HexColor("#2E6DB4")
+    RL_ACCENT = colors.HexColor("#4A90D9")
+    RL_GREEN  = colors.HexColor("#1E8449")
+    RL_AMBER  = colors.HexColor("#E67E22")
+    RL_RED    = colors.HexColor("#C0392B")
+    RL_DRED   = colors.HexColor("#7B241C")
+    RL_WHITE  = colors.white
+    RL_LGRAY  = colors.HexColor("#EBF0F7")
+
+    def _sty(name, **kw): return ParagraphStyle(name, **kw)
+    S_H1   = _sty("H1",  fontSize=14, textColor=RL_BLUE,  fontName="Helvetica-Bold",
+                  spaceBefore=12, spaceAfter=4)
+    S_H2   = _sty("H2",  fontSize=11, textColor=RL_LIGHT, fontName="Helvetica-Bold",
+                  spaceBefore=8,  spaceAfter=3)
+    S_BODY = _sty("Body",fontSize=9,  textColor=colors.HexColor("#333333"),
+                  fontName="Helvetica", leading=14, alignment=TA_JUSTIFY, spaceAfter=6)
+    S_CTR  = _sty("Ctr", fontSize=9,  textColor=colors.HexColor("#333333"),
+                  fontName="Helvetica", alignment=TA_CENTER)
+    S_FOOT = _sty("Foot",fontSize=7,  textColor=colors.HexColor("#AAAAAA"),
+                  fontName="Helvetica", alignment=TA_CENTER, spaceBefore=4)
+
+    def _hr(): return HRFlowable(width="100%", thickness=1, color=RL_ACCENT,
+                                  spaceAfter=6, spaceBefore=2)
+    def _sp(h=0.3): return Spacer(1, h*cm)
+
+    def _tbl(data, col_widths, style_extra=None):
+        base = [
+            ("BACKGROUND", (0,0),(-1,0), RL_BLUE),
+            ("TEXTCOLOR",  (0,0),(-1,0), RL_WHITE),
+            ("FONTNAME",   (0,0),(-1,0), "Helvetica-Bold"),
+            ("FONTSIZE",   (0,0),(-1,-1), 8),
+            ("ALIGN",      (0,0),(-1,-1), "CENTER"),
+            ("VALIGN",     (0,0),(-1,-1), "MIDDLE"),
+            ("ROWHEIGHT",  (0,0),(-1,-1), 0.55*cm),
+            ("BOX",        (0,0),(-1,-1), 0.5, RL_ACCENT),
+            ("INNERGRID",  (0,0),(-1,-1), 0.25, colors.HexColor("#CCDDEE")),
+            ("TOPPADDING", (0,0),(-1,-1), 3),
+            ("BOTTOMPADDING",(0,0),(-1,-1), 3),
+        ]
+        for ri in range(1, len(data)):
+            bg = colors.HexColor("#EBF0F7") if ri%2==0 else colors.white
+            base.append(("BACKGROUND",(0,ri),(-1,ri), bg))
+        if style_extra: base.extend(style_extra)
+        t = Table(data, colWidths=col_widths)
+        t.setStyle(TableStyle(base))
+        return t
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4,
+                            leftMargin=2*cm, rightMargin=2*cm,
+                            topMargin=2.5*cm, bottomMargin=2*cm)
+    story = []
+
+    # ── COVER ────────────────────────────────────────────────────────────────
+    S_BT = _sty("BT", fontSize=24, textColor=RL_WHITE, fontName="Helvetica-Bold",
+                alignment=TA_CENTER, leading=30)
+    S_BS = _sty("BS", fontSize=12, textColor=colors.HexColor("#C8D8EC"),
+                fontName="Helvetica", alignment=TA_CENTER, leading=18)
+    S_BD = _sty("BD", fontSize=10, textColor=colors.HexColor("#AABBCC"),
+                fontName="Helvetica", alignment=TA_CENTER, leading=14)
+
+    if os.path.exists(LOGO_PATH):
+        try:
+            from reportlab.platypus import Image as RLImage
+            logo = RLImage(LOGO_PATH, width=3.6*cm, height=1.8*cm)
+            logo.hAlign = "CENTER"
+            story.append(_sp(1))
+            story.append(logo)
+            story.append(_sp(0.5))
+        except Exception: story.append(_sp(3))
+    else:
+        story.append(_sp(4))
+
+    banner = Table([
+        [Paragraph("GASO COMUNICACIONES", S_BT)],
+        [Paragraph(f"Reporte Ejecutivo de Crossdock", S_BS)],
+        [Paragraph(f"{ciudad.upper()}  ·  {region}", S_BS)],
+        [Paragraph(fecha_str, S_BD)],
+    ], colWidths=[17*cm])
+    banner.setStyle(TableStyle([
+        ("BACKGROUND",(0,0),(-1,-1), RL_BLUE),
+        ("LEFTPADDING",(0,0),(-1,-1), 24),
+        ("RIGHTPADDING",(0,0),(-1,-1), 24),
+        ("TOPPADDING",(0,0),(0,0), 36),
+        ("BOTTOMPADDING",(0,-1),(-1,-1), 36),
+        ("TOPPADDING",(0,1),(-1,-1), 4),
+        ("BOTTOMPADDING",(0,0),(-1,-2), 4),
+    ]))
+    story.append(banner)
+    story.append(_sp(0.8))
+
+    # KPI cover boxes
+    n_ent  = len(df_xd);  n_act = len(df_activo); n_sal = len(df_salidas)
+    pct_rot= n_sal/n_ent if n_ent>0 else 0
+    dias_p = df_activo["_DIAS"].median() if len(df_activo)>0 else 0
+
+    def _pct_c(p):
+        if p>100: return RL_DRED
+        if p>90:  return RL_RED
+        if p>70:  return RL_AMBER
+        return RL_GREEN
+
+    def _kpi_cell(val, lbl, bg=RL_LGRAY, fg=RL_BLUE):
+        S_V = _sty("KV", fontSize=15, fontName="Helvetica-Bold",
+                   textColor=fg, alignment=TA_CENTER, leading=19)
+        S_L = _sty("KL", fontSize=8, fontName="Helvetica",
+                   textColor=colors.HexColor("#555555") if bg==RL_LGRAY else RL_WHITE,
+                   alignment=TA_CENTER, leading=11)
+        inner = Table([[Paragraph(str(val), S_V)],[Paragraph(lbl, S_L)]],
+                      colWidths=[3.2*cm])
+        inner.setStyle(TableStyle([
+            ("BACKGROUND",(0,0),(-1,-1), bg),
+            ("BOX",(0,0),(-1,-1), 0.5, RL_ACCENT),
+            ("TOPPADDING",(0,0),(-1,-1), 8),
+            ("BOTTOMPADDING",(0,0),(-1,-1), 8),
+        ]))
+        return inner
+
+    kpi_row = [[
+        _kpi_cell(f"{n_ent:,}", "Registros Totales"),
+        _kpi_cell(f"{n_act:,}", "En Inventario"),
+        _kpi_cell(f"{n_sal:,}", "Salidas Procesadas"),
+        _kpi_cell(f"{pct_rot:.0%}", "% Rotación",
+                  bg=_pct_c(pct_rot*100 if cap==0 else n_act/cap*100), fg=RL_WHITE),
+        _kpi_cell(f"{dias_p:.0f} d", "Días Prom. Inventario"),
+    ]]
+    kpi_tbl = Table(kpi_row, colWidths=[3.2*cm]*5)
+    kpi_tbl.setStyle(TableStyle([
+        ("ALIGN",(0,0),(-1,-1),"CENTER"),
+        ("VALIGN",(0,0),(-1,-1),"MIDDLE"),
+    ]))
+    story.append(kpi_tbl)
+    story.append(PageBreak())
+
+    # ── PAGE 2: BALANCE POR CARRIER ──────────────────────────────────────────
+    story.append(Paragraph(f"1. Balance de Entradas y Salidas por Carrier", S_H1))
+    story.append(_hr())
+
+    bal_hdr = ["Carrier","Entradas","En Inv.","Salidas","% Rotación","Días Prom.","Devoluciones"]
+    bal_data = [bal_hdr]
+    for car in carriers:
+        df_c  = df_xd[df_xd["CARRIER"]==car]
+        df_ca = df_c[~df_c["_ES_SALIDA"]]
+        df_cs = df_c[df_c["_ES_SALIDA"]]
+        df_cd = df_c[df_c.get("ESTATUS","").apply(lambda x: str(x).upper()=="DEVOLUCION") if "ESTATUS" in df_c.columns else pd.Series([False]*len(df_c))]
+        pct_c = len(df_cs)/len(df_c) if len(df_c)>0 else 0
+        dias_c= df_ca["_DIAS"].median() if len(df_ca)>0 else 0
+        bal_data.append([car, f"{len(df_c):,}", f"{len(df_ca):,}", f"{len(df_cs):,}",
+                         f"{pct_c:.1%}", f"{dias_c:.0f} días", f"{len(df_cd):,}"])
+
+    story.append(_tbl(bal_data, [3.0*cm,2.0*cm,2.0*cm,2.0*cm,2.2*cm,2.2*cm,2.4*cm]))
+    story.append(_sp(0.4))
+
+    # Narrative
+    for car in carriers:
+        df_c  = df_xd[df_xd["CARRIER"]==car]
+        df_ca = df_c[~df_c["_ES_SALIDA"]]
+        df_cs = df_c[df_c["_ES_SALIDA"]]
+        pct_c = len(df_cs)/len(df_c) if len(df_c)>0 else 0
+        dias_c= df_ca["_DIAS"].median() if len(df_ca)>0 else 0
+        if pct_c < 0.3:
+            txt = (f"<b>{car}</b> muestra una rotación baja del {pct_c:.0%} en {ciudad}. "
+                   f"Con {len(df_ca):,} pallets activos y una mediana de {dias_c:.0f} días en inventario, "
+                   f"se recomienda revisar el programa de salidas.")
+        elif pct_c > 0.7:
+            txt = (f"<b>{car}</b> tiene una rotación saludable del {pct_c:.0%}. "
+                   f"El crossdock gestiona activamente sus {len(df_ca):,} pallets activos "
+                   f"con una permanencia mediana de {dias_c:.0f} días.")
+        else:
+            txt = (f"<b>{car}</b> registra una rotación del {pct_c:.0%} con {len(df_ca):,} "
+                   f"pallets activos y mediana de {dias_c:.0f} días en almacén.")
+        story.append(Paragraph(txt, S_BODY))
+
+    story.append(PageBreak())
+
+    # ── PAGE 3: DISTRIBUCIÓN Y AGING ─────────────────────────────────────────
+    story.append(Paragraph("2. Distribución por Tipo de Material y Aging", S_H1))
+    story.append(_hr())
+
+    mat_hdr = ["Tipo de Material","Entradas","En Inv.","Salidas","% Rotación"]
+    mat_data = [mat_hdr]
+    for tipo in sorted(df_xd["TIPO DE MATERIAL"].fillna("SIN CLASIFICAR").unique()):
+        df_t  = df_xd[df_xd["TIPO DE MATERIAL"].fillna("SIN CLASIFICAR")==tipo]
+        df_ta = df_t[~df_t["_ES_SALIDA"]]
+        df_ts = df_t[df_t["_ES_SALIDA"]]
+        pct_t = len(df_ts)/len(df_t) if len(df_t)>0 else 0
+        mat_data.append([tipo, f"{len(df_t):,}", f"{len(df_ta):,}",
+                         f"{len(df_ts):,}", f"{pct_t:.1%}"])
+
+    story.append(Paragraph("Distribución por Tipo de Material", S_H2))
+    story.append(_tbl(mat_data, [4.5*cm,2.5*cm,2.5*cm,2.5*cm,2.5*cm]))
+    story.append(_sp(0.5))
+
+    # Aging
+    story.append(Paragraph("Análisis de Antigüedad (Aging) – Inventario Activo", S_H2))
+    dias_act = df_activo["_DIAS"].dropna()
+    aging_buckets = [("0–15 días",0,15,"FRESCO"),("16–30 días",16,30,"FRESCO"),
+                     ("31–60 días",31,60,"ATENCIÓN"),("61–90 días",61,90,"ATENCIÓN"),
+                     ("91–180 días",91,180,"CRÍTICO"),("+180 días",181,99999,"URGENTE")]
+    aging_hdr  = ["Rango","Pallets","% del Total","Estado"]
+    aging_data = [aging_hdr]
+    aging_style_extra = []
+    for ri, (lbl, lo, hi, risk) in enumerate(aging_buckets, 1):
+        cnt = int(((dias_act >= lo) & (dias_act <= min(hi,99998))).sum())
+        pct = cnt/len(dias_act) if len(dias_act)>0 else 0
+        aging_data.append([lbl, f"{cnt:,}", f"{pct:.1%}", risk])
+        risk_color = {"FRESCO":RL_GREEN,"ATENCIÓN":RL_AMBER,
+                      "CRÍTICO":RL_RED,"URGENTE":RL_DRED}[risk]
+        aging_style_extra.append(("BACKGROUND",(3,ri),(3,ri), risk_color))
+        aging_style_extra.append(("TEXTCOLOR", (3,ri),(3,ri), RL_WHITE))
+        aging_style_extra.append(("FONTNAME",  (3,ri),(3,ri), "Helvetica-Bold"))
+
+    story.append(_tbl(aging_data, [4*cm,3*cm,3*cm,3*cm], aging_style_extra))
+
+    # Aging narrative
+    items_critical = int((dias_act > 90).sum())
+    items_urgent   = int((dias_act > 180).sum())
+    dias_med       = dias_act.median() if len(dias_act)>0 else 0
+    if items_urgent > 0:
+        aging_txt = (f"Se detectan <b>{items_urgent} pallets con más de 180 días</b> en inventario — "
+                     f"material potencialmente obsoleto que requiere revisión prioritaria. "
+                     f"En total, {items_critical} pallets superan los 90 días. "
+                     f"La mediana general es de {dias_med:.0f} días.")
+    elif items_critical > 0:
+        aging_txt = (f"Hay <b>{items_critical} pallets con más de 90 días</b> en {ciudad}. "
+                     f"Se recomienda revisión con el carrier correspondiente para programar salidas. "
+                     f"La permanencia mediana es de {dias_med:.0f} días.")
+    else:
+        aging_txt = (f"El inventario de {ciudad} muestra buena rotación: "
+                     f"ningún pallet supera los 90 días en almacén. "
+                     f"La permanencia mediana es de {dias_med:.0f} días.")
+    story.append(_sp(0.3))
+    story.append(Paragraph(aging_txt, S_BODY))
+    story.append(PageBreak())
+
+    # ── PAGE 4: TENDENCIA Y REGRESIÓN ────────────────────────────────────────
+    story.append(Paragraph("3. Tendencia Mensual y Proyección", S_H1))
+    story.append(_hr())
+
+    df_mes = df_xd[df_xd["_MES_STR"]!="DESCONOCIDO"].groupby("_MES_STR").agg(
+        Entradas=("CARRIER","count"),
+        Salidas=("_ES_SALIDA","sum"),
+    ).reset_index().sort_values("_MES_STR").tail(18)  # last 18 months
+
+    trend_hdr  = ["Mes","Entradas","Salidas","Balance"]
+    trend_data = [trend_hdr]
+    for _, row_t in df_mes.iterrows():
+        bal = int(row_t["Entradas"]) - int(row_t["Salidas"])
+        trend_data.append([row_t["_MES_STR"],
+                           f"{int(row_t['Entradas']):,}",
+                           f"{int(row_t['Salidas']):,}",
+                           f"+{bal:,}" if bal >= 0 else f"{bal:,}"])
+
+    story.append(Paragraph("Últimos 18 meses de movimientos", S_H2))
+    story.append(_tbl(trend_data, [4*cm,3*cm,3*cm,3*cm]))
+    story.append(_sp(0.4))
+
+    # Linear regression narrative
+    if len(df_mes) >= 4:
+        import numpy as np
+        x  = np.arange(len(df_mes))
+        y  = df_mes["Entradas"].values.astype(float)
+        m, b = np.polyfit(x, y, 1)
+        r2 = 1 - np.sum((y - (m*x+b))**2) / np.sum((y-y.mean())**2) if y.std()>0 else 0
+        trend_dir = "creciente" if m > 0.5 else "decreciente" if m < -0.5 else "estable"
+        proj_1 = max(0, round(m*(len(df_mes))+b, 0))
+        proj_2 = max(0, round(m*(len(df_mes)+1)+b, 0))
+
+        reg_txt = (f"La regresión lineal sobre los últimos {len(df_mes)} meses muestra una "
+                   f"tendencia <b>{trend_dir}</b> de <b>{m:+.1f} entradas/mes</b> "
+                   f"(R² = {r2:.2f}). "
+                   f"{'Un R² superior a 0.6 indica que la tendencia es estadísticamente significativa. ' if r2>0.6 else 'El R² bajo indica variabilidad alta mes a mes, lo que dificulta proyecciones precisas. '}"
+                   f"Proyección para los próximos 2 meses: "
+                   f"<b>~{proj_1:.0f}</b> y <b>~{proj_2:.0f}</b> entradas respectivamente.")
+        story.append(Paragraph(reg_txt, S_BODY))
+
+    story.append(PageBreak())
+
+    # ── PAGE 5: TOP SITIOS ───────────────────────────────────────────────────
+    story.append(Paragraph("4. Top Sitios y Transportistas", S_H1))
+    story.append(_hr())
+
+    top_sites = df_xd.groupby("ID SITIO").agg(
+        Entradas=("CARRIER","count"),
+        Carrier=("CARRIER", lambda x: x.value_counts().index[0]),
+        Dias=("_DIAS","median"),
+    ).sort_values("Entradas", ascending=False).head(15).reset_index()
+
+    site_hdr  = ["ID Sitio","Entradas","Carrier Principal","Días Prom."]
+    site_data = [site_hdr]
+    for _, r_s in top_sites.iterrows():
+        site_data.append([r_s["ID SITIO"], f"{int(r_s['Entradas']):,}",
+                          r_s["Carrier"], f"{r_s['Dias']:.0f}" if pd.notna(r_s["Dias"]) else "-"])
+    story.append(Paragraph("Top 15 Sitios por Entradas", S_H2))
+    story.append(_tbl(site_data, [5*cm,3*cm,4*cm,3*cm]))
+    story.append(_sp(0.5))
+
+    if "NOMBRE ASP" in df_xd.columns:
+        top_asp = df_xd[df_xd["_ES_SALIDA"]].groupby("NOMBRE ASP").size()                    .sort_values(ascending=False).head(10).reset_index()
+        top_asp.columns = ["ASP","Salidas"]
+        asp_hdr  = ["Transportista (ASP)","Salidas Realizadas"]
+        asp_data = [asp_hdr] + [[r_a["ASP"], f"{int(r_a['Salidas']):,}"] for _, r_a in top_asp.iterrows()]
+        story.append(Paragraph("Top 10 Transportistas (ASP) por Salidas", S_H2))
+        story.append(_tbl(asp_data, [9*cm, 6*cm]))
+
+    # Footer
+    story.append(_sp(1))
+    story.append(HRFlowable(width="100%", thickness=0.5,
+                             color=colors.HexColor("#CCDDEE")))
+    story.append(Paragraph(
+        f"Reporte Crossdock {ciudad}  ·  Gaso Comunicaciones  ·  {fecha_str}  ·  Confidencial",
+        S_FOOT))
+
+    doc.build(story)
+    buf.seek(0)
+    return buf
+
 def _color_pct(pct):
     if pct > 1.0:  return "#7B241C"
     if pct > 0.90: return "#C0392B"
@@ -1824,7 +3059,7 @@ def make_charts(df_clean, cols):
     # Region bar
     reg = df_clean.groupby("REGION")["M2"].sum().reset_index()
     fig6 = px.bar(reg, x="REGION", y="M2", text="M2", color="REGION",
-                  color_discrete_map={"REGIÓN LUIS": GASO_BLUE, "REGIÓN JORGE": GASO_ACCENT},
+                  color_discrete_map={"REGIÓN JOSÉ": GASO_BLUE, "REGIÓN JORGE": GASO_ACCENT},
                   title="M² por Región")
     fig6.update_traces(texttemplate="%{text:.0f} m²", textposition="outside")
     fig6.update_layout(showlegend=False, plot_bgcolor="white", paper_bgcolor="white",
@@ -1998,6 +3233,7 @@ if process_btn:
             saved_dec = load_decisions()
             df_clean, df_consol, df_pending, logs, cols = run_pipeline(uploaded, saved_dec)
 
+            st.session_state.df_raw_full   = df_raw_full
             st.session_state.df_clean      = df_clean
             st.session_state.df_consol     = df_consol
             st.session_state.df_pending    = df_pending
@@ -2016,6 +3252,7 @@ if process_btn:
 
 # ── Results ───────────────────────────────────────────────────────────────────
 if st.session_state.processed:
+    df_raw_full   = st.session_state.get('df_raw_full', None)
     df_clean      = st.session_state.df_clean
     df_consol     = st.session_state.df_consol
     df_pending    = st.session_state.df_pending
@@ -2042,7 +3279,7 @@ if st.session_state.processed:
     with rf1:
         region_filter = st.selectbox(
             "Analizar región",
-            ["Todas", "REGIÓN LUIS", "REGIÓN JORGE"],
+            ["Todas", "REGIÓN JOSÉ", "REGIÓN JORGE"],
             key="region_filter",
             help="Filtra todos los KPIs, gráficas y tabla de ocupación por región."
         )
@@ -2329,6 +3566,117 @@ if st.session_state.processed:
     else:
         st.success("✅ Todos los registros tienen XDOCK asignado. No hay pendientes.")
 
+    # ── Análisis por Crossdock ───────────────────────────────────────────────
+    st.markdown('<div class="sec-title">🏭 Análisis Profundo por Crossdock</div>',
+                unsafe_allow_html=True)
+
+    all_xdocks = sorted(CAPACIDADES.keys())
+    xd_display = {CIUDAD_MAP.get(x, x): x for x in all_xdocks}
+
+    xd_col1, xd_col2 = st.columns([3, 2])
+    with xd_col1:
+        xd_selected_city = st.selectbox(
+            "Selecciona el crossdock a analizar",
+            list(xd_display.keys()),
+            key="xd_deep_select",
+        )
+    xd_selected = xd_display[xd_selected_city]
+
+    with xd_col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        xd_gen_btn = st.button("📊 Generar Análisis de Crossdock",
+                               use_container_width=True, key="xd_gen_btn")
+
+    if xd_gen_btn and df_raw_full is not None:
+        with st.spinner(f"Construyendo análisis completo de {xd_selected_city}..."):
+            try:
+                xd_excel = build_crossdock_excel(df_raw_full, xd_selected, cols)
+                xd_pdf   = build_crossdock_pdf(df_raw_full, xd_selected, cols)
+                st.session_state.xd_excel      = xd_excel
+                st.session_state.xd_pdf        = xd_pdf
+                st.session_state.xd_name       = xd_selected
+                st.session_state.xd_city       = xd_selected_city
+                st.success(f"✅ Análisis de {xd_selected_city} generado correctamente")
+            except Exception as e:
+                st.error(f"Error generando análisis: {e}")
+                import traceback; st.code(traceback.format_exc())
+    elif xd_gen_btn and df_raw_full is None:
+        st.warning("Procesa el archivo primero.")
+
+    if "xd_excel" in st.session_state:
+        xd_city_slug = st.session_state.xd_city.replace(" ","_").upper()
+        xd_col_a, xd_col_b = st.columns(2)
+        with xd_col_a:
+            st.download_button(
+                label=f"📥 Excel Analítico – {st.session_state.xd_city}",
+                data=st.session_state.xd_excel,
+                file_name=f"GASO_CROSSDOCK_{xd_city_slug}_{datetime.date.today().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+            )
+        with xd_col_b:
+            st.download_button(
+                label=f"📄 PDF Ejecutivo – {st.session_state.xd_city}",
+                data=st.session_state.xd_pdf,
+                file_name=f"GASO_CROSSDOCK_{xd_city_slug}_{datetime.date.today().strftime('%Y%m%d')}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+
+        # Preview metrics in app
+        if df_raw_full is not None:
+            import pandas as pd
+            def _match(val):
+                if not val: return False
+                v = str(val).strip()
+                return v == st.session_state.xd_name or XDOCK_ALIASES.get(norm(v), v) == st.session_state.xd_name
+
+            df_xd_prev = df_raw_full[df_raw_full["XDOCK"].apply(_match)].copy()
+            df_xd_prev["_FECHA_ING"] = pd.to_datetime(df_xd_prev["FECHA DE INGRESO"], errors="coerce")
+            df_xd_prev["_DIAS"]      = pd.to_numeric(df_xd_prev.get("DIAS INV.", pd.Series()), errors="coerce")
+            df_xd_prev["_EXIST"]     = pd.to_numeric(df_xd_prev.get("EXISTENCIA REAL", pd.Series()), errors="coerce")
+
+            def _is_sal(row):
+                es = str(row.get("ESTATUS SALIDA","")).strip().upper()
+                fd = row.get("FECHA DE SALIDA", None)
+                fd_valid = (fd is not None and
+                            not (isinstance(fd, float) and pd.isna(fd)) and
+                            str(fd).strip() not in ("", "None", "NaT", "nan"))
+                return es == "SALIDA" and fd_valid
+
+            df_xd_prev["_ES_SAL"] = df_xd_prev.apply(_is_sal, axis=1)
+            df_act_p = df_xd_prev[~df_xd_prev["_ES_SAL"]]
+
+            with st.expander(f"📋 Vista previa – {st.session_state.xd_city}", expanded=True):
+                pm1, pm2, pm3, pm4, pm5 = st.columns(5)
+                mets = [
+                    (pm1, "Total registros",    f"{len(df_xd_prev):,}"),
+                    (pm2, "En inventario",      f"{len(df_act_p):,}"),
+                    (pm3, "Salidas procesadas", f"{df_xd_prev['_ES_SAL'].sum():,}"),
+                    (pm4, "Días prom. inv.",    f"{df_act_p['_DIAS'].median():.0f}" if len(df_act_p)>0 else "-"),
+                    (pm5, ">90 días en inv.",   f"{int((df_act_p['_DIAS'].dropna()>90).sum()):,}"),
+                ]
+                for col_m, lbl, val in mets:
+                    with col_m:
+                        st.metric(lbl, val)
+
+                # Carrier breakdown table
+                if "CARRIER" in df_xd_prev.columns:
+                    car_summ = []
+                    for car in sorted(df_xd_prev["CARRIER"].dropna().unique()):
+                        df_cc = df_xd_prev[df_xd_prev["CARRIER"]==car]
+                        df_ca = df_cc[~df_cc["_ES_SAL"]]
+                        pct_r = df_cc["_ES_SAL"].sum()/len(df_cc) if len(df_cc)>0 else 0
+                        car_summ.append({
+                            "Carrier": car,
+                            "Entradas": len(df_cc),
+                            "En inventario": len(df_ca),
+                            "Salidas": int(df_cc["_ES_SAL"].sum()),
+                            "% Rotación": f"{pct_r:.1%}",
+                            "Días prom.": f"{df_ca['_DIAS'].median():.0f}" if len(df_ca)>0 else "-",
+                        })
+                    st.dataframe(pd.DataFrame(car_summ), use_container_width=True, hide_index=True)
+
     # ── Downloads ─────────────────────────────────────────────────────────────
     st.markdown('<div class="sec-title">⬇️ Descargar Reportes</div>',
                 unsafe_allow_html=True)
@@ -2338,7 +3686,7 @@ if st.session_state.processed:
     st.markdown("**📄 Reporte PDF Ejecutivo**")
     pdf_r1, pdf_r2 = st.columns([3, 2])
     with pdf_r1:
-        pdf_region = st.selectbox("Región para el PDF", ["Todas", "REGIÓN LUIS", "REGIÓN JORGE"],
+        pdf_region = st.selectbox("Región para el PDF", ["Todas", "REGIÓN JOSÉ", "REGIÓN JORGE"],
                                    key="pdf_region_select")
     with pdf_r2:
         st.markdown("<br>", unsafe_allow_html=True)
@@ -2369,7 +3717,7 @@ if st.session_state.processed:
     st.markdown("**📊 Archivos Excel**")
     xl_r1, xl_r2 = st.columns([3, 2])
     with xl_r1:
-        xl_region = st.selectbox("Región para el Excel", ["Todas", "REGIÓN LUIS", "REGIÓN JORGE"],
+        xl_region = st.selectbox("Región para el Excel", ["Todas", "REGIÓN JOSÉ", "REGIÓN JORGE"],
                                   key="xl_region_select")
     with xl_r2:
         st.markdown("<br>", unsafe_allow_html=True)
