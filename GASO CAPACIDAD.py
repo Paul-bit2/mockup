@@ -634,7 +634,7 @@ def run_pipeline(uploaded_file, saved_decisions: dict):
 
     logs.append(f"📦 Pallets activos: {int(df[cols['no_pallet']].sum()):,} | M²: {df['M2'].sum():,.2f} | Consolidados: {len(df_consol)}")
 
-    return df, df_consol, df_pending, logs, cols
+    return df, df_consol, df_pending, logs, cols, df_raw_full
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3231,7 +3231,7 @@ if process_btn:
     with st.spinner("⚙️ Procesando base de datos..."):
         try:
             saved_dec = load_decisions()
-            df_clean, df_consol, df_pending, logs, cols = run_pipeline(uploaded, saved_dec)
+            df_clean, df_consol, df_pending, logs, cols, df_raw_full = run_pipeline(uploaded, saved_dec)
 
             st.session_state.df_raw_full   = df_raw_full
             st.session_state.df_clean      = df_clean
