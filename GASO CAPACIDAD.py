@@ -1774,7 +1774,7 @@ def generate_pdf(df_clean, df_consol, cols, region_filter="Todas"):
 #  CROSSDOCK DEEP ANALYSIS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_crossdock_excel(df_raw_full, xdock_name, cols):
+def build_crossdock_excel(df_clean_all, df_consol_all, df_raw_full, xdock_name, cols):
     """
     Build a professional analyst-grade Excel workbook for a single crossdock.
     Uses Excel formulas throughout so all metrics update when data changes.
@@ -1858,56 +1858,72 @@ def build_crossdock_excel(df_raw_full, xdock_name, cols):
         c.fill  = _fill("F4F6F9"); c.alignment = _ctr()
 
     # ── Prepare data ─────────────────────────────────────────────────────────
-    # Filter for this crossdock (raw data has XDOCK aliases, normalize)
-    def _match_xdock(val):
+    # ─── Data extraction using pipeline output as source of truth ──────────
+    # Active inventory (df_clean_all) and consolidados (df_consol_all) were
+    # already filtered by the main pipeline — same criteria as the dashboard.
+    # Salidas come from df_raw_full (removed by pipeline by design).
+    xd_col_key = cols.get("xdock", "xdock")
+    car_col_k  = cols.get("carrier", "carrier")
+    mat_col_k  = cols.get("tipo_material", "tipo de material")
+
+    # Active normal pallets — exactly what the dashboard counts
+    df_activo    = df_clean_all[df_clean_all[xd_col_key] == xdock_name].copy()
+    # Consolidated active — exactly what the dashboard shows separately
+    df_consol_xd = df_consol_all[df_consol_all[xd_col_key] == xdock_name].copy()
+
+    # DIAS INV from pipeline-copied columns
+    dias_col = next((c for c in df_activo.columns if "dias inv" in c.lower()), None)
+    df_activo["_DIAS"]    = pd.to_numeric(df_activo[dias_col], errors="coerce") if dias_col else pd.NA
+    df_consol_xd["_DIAS"] = pd.to_numeric(df_consol_xd[dias_col], errors="coerce") if dias_col else pd.NA
+
+    # Flags
+    df_activo["_IS_CONSOL"]    = False
+    df_activo["_ES_SALIDA"]    = False
+    df_consol_xd["_IS_CONSOL"] = True
+    df_consol_xd["_ES_SALIDA"] = False
+
+    # Salidas and trend data from raw (same _is_salida logic as pipeline)
+    def _match_xdock_raw(val):
         if not val: return False
         v = str(val).strip()
         return v == xdock_name or XDOCK_ALIASES.get(norm(v), v) == xdock_name
 
-    df_xd = df_raw_full[df_raw_full["XDOCK"].apply(_match_xdock)].copy()
-
-    # Parse dates
-    df_xd["_FECHA_ING"] = pd.to_datetime(df_xd["FECHA DE INGRESO"], errors="coerce")
-    df_xd["_FECHA_SAL"] = pd.to_datetime(df_xd["FECHA DE SALIDA"],  errors="coerce")
-    df_xd["_MES_ING"]   = df_xd["_FECHA_ING"].dt.to_period("M").astype(str)
-    df_xd["_AÑO_ING"]   = df_xd["_FECHA_ING"].dt.year
-    df_xd["_NO_PAL"]    = pd.to_numeric(df_xd["NO. DE PALLET"], errors="coerce").fillna(0)
-    df_xd["_DIAS"]      = pd.to_numeric(df_xd["DIAS INV."], errors="coerce")
-    df_xd["_DIAS_DUR"]  = pd.to_numeric(df_xd["DIAS QUE DURO EN INVENTARIO"], errors="coerce")
-
-    # Active (inventario) vs Salidas
-    def _is_salida(row):
+    def _is_salida_raw(row):
         es = str(row.get("ESTATUS SALIDA", "")).strip().upper()
         fd = row.get("FECHA DE SALIDA", None)
-        # A record is a SALIDA only when ESTATUS SALIDA = "SALIDA"
-        # AND has a real (non-null) FECHA DE SALIDA
         fd_valid = (fd is not None and
                     not (isinstance(fd, float) and pd.isna(fd)) and
                     str(fd).strip() not in ("", "None", "NaT", "nan"))
         return es == "SALIDA" and fd_valid
 
-    df_xd["_ES_SALIDA"] = df_xd.apply(_is_salida, axis=1)
-
-    # ── Separate consolidados (NO. DE PALLET == 0) ───────────────────────
-    # Consolidados are small items on top of another pallet.
-    # They are NOT counted as pallets in KPIs, aging or days averages.
     def _is_zero_pallet(val):
         try: return float(val) == 0
         except: return False
 
-    df_xd["_IS_CONSOL"] = df_xd["NO. DE PALLET"].apply(_is_zero_pallet)
-    # Normal active inventory (not a salida, pallet > 0)
-    df_activo        = df_xd[~df_xd["_ES_SALIDA"] & ~df_xd["_IS_CONSOL"]].copy()
-    # Consolidated active (not a salida, pallet = 0) — for traceability only
-    df_consol_xd     = df_xd[~df_xd["_ES_SALIDA"] &  df_xd["_IS_CONSOL"]].copy()
-    # All salidas (for flow/balance reporting)
-    df_salidas       = df_xd[ df_xd["_ES_SALIDA"]].copy()
-    # Normal salidas only (pallet > 0)
-    df_salidas_normal= df_xd[ df_xd["_ES_SALIDA"] & ~df_xd["_IS_CONSOL"]].copy()
-    carriers = sorted(df_xd["CARRIER"].dropna().unique())
-    tipos    = sorted(df_xd["TIPO DE MATERIAL"].fillna("SIN CLASIFICAR").unique())
-    clasifs  = sorted(df_xd["CLASIFICACION DE MATERIAL"].fillna("OTRO").unique())
-    cap      = CAPACIDADES.get(xdock_name, 0)
+    df_raw_xd = df_raw_full[df_raw_full["XDOCK"].apply(_match_xdock_raw)].copy()
+    df_raw_xd["_ES_SALIDA"] = df_raw_xd.apply(_is_salida_raw, axis=1)
+    df_raw_xd["_IS_CONSOL"] = df_raw_xd["NO. DE PALLET"].apply(_is_zero_pallet)
+    df_raw_xd["_FECHA_ING"] = pd.to_datetime(df_raw_xd.get("FECHA DE INGRESO", pd.Series(dtype=str)), errors="coerce")
+    df_raw_xd["_MES_STR"]   = df_raw_xd["_FECHA_ING"].dt.strftime("%Y-%m").fillna("DESCONOCIDO")
+    df_raw_xd["_DIAS"]      = pd.to_numeric(df_raw_xd.get("DIAS INV.", pd.Series(dtype=float)), errors="coerce")
+
+    df_salidas        = df_raw_xd[df_raw_xd["_ES_SALIDA"]].copy()
+    df_salidas_normal = df_raw_xd[df_raw_xd["_ES_SALIDA"] & ~df_raw_xd["_IS_CONSOL"]].copy()
+    # df_xd = all raw records — used only for trend and ASP charts
+    df_xd = df_raw_xd.copy()
+
+    carriers = sorted(set(
+        df_activo[car_col_k].dropna().unique().tolist() +
+        df_salidas["CARRIER"].dropna().unique().tolist()
+    ))
+    tipos = sorted(set(
+        df_activo[mat_col_k].fillna("SIN CLASIFICAR").unique().tolist() +
+        df_salidas.get("TIPO DE MATERIAL", pd.Series(dtype=str)).fillna("SIN CLASIFICAR").unique().tolist()
+    ))
+    clasifs_src = [c for c in df_activo.columns if "clasif" in c]
+    clasifs = sorted(df_activo[clasifs_src[0]].fillna("OTRO").unique()) if clasifs_src else []
+    cap     = CAPACIDADES.get(xdock_name, 0)
+    carriers = sorted(set(df_activo[car_col_k].dropna().unique().tolist() + df_salidas["CARRIER"].dropna().unique().tolist()))
 
     wb = openpyxl.Workbook()
 
@@ -2621,7 +2637,7 @@ def build_crossdock_excel(df_raw_full, xdock_name, cols):
     return buf
 
 
-def build_crossdock_pdf(df_raw_full, xdock_name, cols):
+def build_crossdock_pdf(df_clean_all, df_consol_all, df_raw_full, xdock_name, cols):
     """
     Build an executive PDF report for a single crossdock with smart analysis.
     """
@@ -2640,44 +2656,72 @@ def build_crossdock_pdf(df_raw_full, xdock_name, cols):
     fecha_str = datetime.date.today().strftime("%d de %B de %Y")
     region    = REGION_MAP.get(xdock_name, "")
 
-    def _match_xdock(val):
+    # ─── Data extraction using pipeline output as source of truth ──────────
+    # Active inventory (df_clean_all) and consolidados (df_consol_all) were
+    # already filtered by the main pipeline — same criteria as the dashboard.
+    # Salidas come from df_raw_full (removed by pipeline by design).
+    xd_col_key = cols.get("xdock", "xdock")
+    car_col_k  = cols.get("carrier", "carrier")
+    mat_col_k  = cols.get("tipo_material", "tipo de material")
+
+    # Active normal pallets — exactly what the dashboard counts
+    df_activo    = df_clean_all[df_clean_all[xd_col_key] == xdock_name].copy()
+    # Consolidated active — exactly what the dashboard shows separately
+    df_consol_xd = df_consol_all[df_consol_all[xd_col_key] == xdock_name].copy()
+
+    # DIAS INV from pipeline-copied columns
+    dias_col = next((c for c in df_activo.columns if "dias inv" in c.lower()), None)
+    df_activo["_DIAS"]    = pd.to_numeric(df_activo[dias_col], errors="coerce") if dias_col else pd.NA
+    df_consol_xd["_DIAS"] = pd.to_numeric(df_consol_xd[dias_col], errors="coerce") if dias_col else pd.NA
+
+    # Flags
+    df_activo["_IS_CONSOL"]    = False
+    df_activo["_ES_SALIDA"]    = False
+    df_consol_xd["_IS_CONSOL"] = True
+    df_consol_xd["_ES_SALIDA"] = False
+
+    # Salidas and trend data from raw (same _is_salida logic as pipeline)
+    def _match_xdock_raw(val):
         if not val: return False
         v = str(val).strip()
         return v == xdock_name or XDOCK_ALIASES.get(norm(v), v) == xdock_name
 
-    df_xd = df_raw_full[df_raw_full["XDOCK"].apply(_match_xdock)].copy()
-    df_xd["_FECHA_ING"] = pd.to_datetime(df_xd["FECHA DE INGRESO"], errors="coerce")
-    df_xd["_NO_PAL"]    = pd.to_numeric(df_xd["NO. DE PALLET"], errors="coerce").fillna(0)
-    df_xd["_DIAS"]      = pd.to_numeric(df_xd["DIAS INV."], errors="coerce")
-    df_xd["_MES_STR"]   = df_xd["_FECHA_ING"].dt.strftime("%Y-%m").fillna("DESCONOCIDO")
-
-    def _is_salida(row):
-        es = str(row.get("ESTATUS SALIDA","")).strip().upper()
+    def _is_salida_raw(row):
+        es = str(row.get("ESTATUS SALIDA", "")).strip().upper()
         fd = row.get("FECHA DE SALIDA", None)
         fd_valid = (fd is not None and
                     not (isinstance(fd, float) and pd.isna(fd)) and
                     str(fd).strip() not in ("", "None", "NaT", "nan"))
         return es == "SALIDA" and fd_valid
 
-    df_xd["_ES_SALIDA"] = df_xd.apply(_is_salida, axis=1)
-
-    # ── Separate consolidados (NO. DE PALLET == 0) ───────────────────────
-    # Consolidados are small items on top of another pallet.
-    # They are NOT counted as pallets in KPIs, aging or days averages.
     def _is_zero_pallet(val):
         try: return float(val) == 0
         except: return False
 
-    df_xd["_IS_CONSOL"] = df_xd["NO. DE PALLET"].apply(_is_zero_pallet)
-    # Normal active inventory (not a salida, pallet > 0)
-    df_activo        = df_xd[~df_xd["_ES_SALIDA"] & ~df_xd["_IS_CONSOL"]].copy()
-    # Consolidated active (not a salida, pallet = 0) — for traceability only
-    df_consol_xd     = df_xd[~df_xd["_ES_SALIDA"] &  df_xd["_IS_CONSOL"]].copy()
-    # All salidas (for flow/balance reporting)
-    df_salidas       = df_xd[ df_xd["_ES_SALIDA"]].copy()
-    # Normal salidas only (pallet > 0)
-    df_salidas_normal= df_xd[ df_xd["_ES_SALIDA"] & ~df_xd["_IS_CONSOL"]].copy()
-    carriers   = sorted(df_xd["CARRIER"].dropna().unique())
+    df_raw_xd = df_raw_full[df_raw_full["XDOCK"].apply(_match_xdock_raw)].copy()
+    df_raw_xd["_ES_SALIDA"] = df_raw_xd.apply(_is_salida_raw, axis=1)
+    df_raw_xd["_IS_CONSOL"] = df_raw_xd["NO. DE PALLET"].apply(_is_zero_pallet)
+    df_raw_xd["_FECHA_ING"] = pd.to_datetime(df_raw_xd.get("FECHA DE INGRESO", pd.Series(dtype=str)), errors="coerce")
+    df_raw_xd["_MES_STR"]   = df_raw_xd["_FECHA_ING"].dt.strftime("%Y-%m").fillna("DESCONOCIDO")
+    df_raw_xd["_DIAS"]      = pd.to_numeric(df_raw_xd.get("DIAS INV.", pd.Series(dtype=float)), errors="coerce")
+
+    df_salidas        = df_raw_xd[df_raw_xd["_ES_SALIDA"]].copy()
+    df_salidas_normal = df_raw_xd[df_raw_xd["_ES_SALIDA"] & ~df_raw_xd["_IS_CONSOL"]].copy()
+    # df_xd = all raw records — used only for trend and ASP charts
+    df_xd = df_raw_xd.copy()
+
+    carriers = sorted(set(
+        df_activo[car_col_k].dropna().unique().tolist() +
+        df_salidas["CARRIER"].dropna().unique().tolist()
+    ))
+    tipos = sorted(set(
+        df_activo[mat_col_k].fillna("SIN CLASIFICAR").unique().tolist() +
+        df_salidas.get("TIPO DE MATERIAL", pd.Series(dtype=str)).fillna("SIN CLASIFICAR").unique().tolist()
+    ))
+    clasifs_src = [c for c in df_activo.columns if "clasif" in c]
+    clasifs = sorted(df_activo[clasifs_src[0]].fillna("OTRO").unique()) if clasifs_src else []
+    cap     = CAPACIDADES.get(xdock_name, 0)
+    carriers = sorted(set(df_activo[car_col_k].dropna().unique().tolist() + df_salidas["CARRIER"].dropna().unique().tolist()))
 
     RL_BLUE   = colors.HexColor("#1A3A6B")
     RL_LIGHT  = colors.HexColor("#2E6DB4")
@@ -3636,8 +3680,8 @@ if st.session_state.processed:
     if xd_gen_btn and df_raw_full is not None:
         with st.spinner(f"Construyendo análisis completo de {xd_selected_city}..."):
             try:
-                xd_excel = build_crossdock_excel(df_raw_full, xd_selected, cols)
-                xd_pdf   = build_crossdock_pdf(df_raw_full, xd_selected, cols)
+                xd_excel = build_crossdock_excel(df_clean, df_consol, df_raw_full, xd_selected, cols)
+                xd_pdf   = build_crossdock_pdf(df_clean, df_consol, df_raw_full, xd_selected, cols)
                 st.session_state.xd_excel      = xd_excel
                 st.session_state.xd_pdf        = xd_pdf
                 st.session_state.xd_name       = xd_selected
