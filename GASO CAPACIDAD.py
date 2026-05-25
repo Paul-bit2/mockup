@@ -40,7 +40,7 @@ XDOCK_ALIASES = {"gaso- torreon-e-ns":     "Gaso- Torreón-E-NS","gaso- torreón
 
 XDOCK_OPTIONS = ["— Selecciona —"] + sorted(CAPACIDADES.keys())
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 PERSISTENT DECISIONS  (saved to gaso_decisions.json beside the script)
 
