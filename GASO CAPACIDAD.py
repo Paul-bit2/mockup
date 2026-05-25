@@ -6,11 +6,11 @@ import ioimport jsonimport osimport reimport datetimeimport warningswarnings.fil
 
 import numpy as npimport pandas as pdimport streamlit as stimport plotly.express as pximport plotly.graph_objects as gofrom plotly.subplots import make_subplotsimport openpyxlfrom openpyxl.styles import Font, PatternFill, Alignment, Border, Sidefrom openpyxl.utils import get_column_letterfrom unidecode import unidecodeimport base64import tempfilefrom reportlab.lib.pagesizes import A4, landscapefrom reportlab.lib.units import cmfrom reportlab.lib.styles import getSampleStyleSheet, ParagraphStylefrom reportlab.lib import colorsfrom reportlab.platypus import (SimpleDocTemplate, Paragraph, Spacer, Image as RLImage,Table, TableStyle, PageBreak, HRFlowable, KeepTogether)from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT, TA_JUSTIFY
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 CONSTANTS
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 DECISIONS_FILE = "gaso_decisions.json"   # persisted next to the scriptLOGO_PATH = "GASO_COMUNICACIONES_LOGO.jpg"  # place beside the script
 
@@ -44,7 +44,7 @@ XDOCK_OPTIONS = ["— Selecciona —"] + sorted(CAPACIDADES.keys())
 
 PERSISTENT DECISIONS  (saved to gaso_decisions.json beside the script)
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 def load_decisions() -> dict:"""Load saved ID_SITIO → {action, xdock} decisions from disk."""if os.path.exists(DECISIONS_FILE):try:with open(DECISIONS_FILE, "r", encoding="utf-8") as f:return json.load(f)except Exception:passreturn {}
 
@@ -52,11 +52,11 @@ def save_decisions(decisions: dict):"""Persist decisions to disk."""with open(DE
 
 def delete_decision(id_sitio: str):d = load_decisions()if id_sitio in d:del d[id_sitio]save_decisions(d)
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 HELPERS
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 def norm(s):if s is None:return ""return unidecode(str(s)).strip().lower()
 
@@ -66,11 +66,11 @@ def is_selecciona(val):"""True if XDOCK is a 'Selecciona...' placeholder — alw
 
 def contains_ens(val):return "e-ns" in norm(val)
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 LOAD
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 def load_file(uploaded_file):wb = openpyxl.load_workbook(uploaded_file, data_only=True)ws = wb["IN-OUT"]headers = [cell.value for cell in ws[5]]data = [list(row) for row in ws.iter_rows(min_row=6, values_only=True)]df = pd.DataFrame(data, columns=headers)df.columns = [norm(c) if c else "" for c in df.columns]return df
 
@@ -78,11 +78,11 @@ def resolve_col(df, candidates):for c in candidates:if c in df.columns:return cr
 
 def get_cols(df):return {"carrier":       resolve_col(df, ["carrier"]),"xdock":         resolve_col(df, ["xdock"]),"folio":         resolve_col(df, ["folio almacen origen"]),"estatus":       resolve_col(df, ["estatus"]),"est_salida":    resolve_col(df, ["estatus salida", "estatus de salida", "status salida"]),"fecha_salida":  resolve_col(df, ["fecha de salida"]),"id_sitio":      resolve_col(df, ["id sitio"]),"nombre_sitio":  resolve_col(df, ["nombre de sitio"]),"no_pallet":     resolve_col(df, ["no. de pallet", "no de pallet"]),"tipo_pallet":   resolve_col(df, ["tipo de pallet"]),"tipo_material": resolve_col(df, ["tipo de material"]),"desc_material": resolve_col(df, ["descripcion material"]),}
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 PIPELINE STEPS
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 def filter_salidas(df, cols):# Parse fecha_salida to compare against cutofffechas = pd.to_datetime(df[cols["fecha_salida"]], errors="coerce")fecha_valida = fechas.notna() & (fechas >= SALIDA_CUTOFF)
 
@@ -230,11 +230,11 @@ def calc_m2(df, cols):def m2(row):tp  = str(row[cols["tipo_pallet"]]).upper().st
 
 def assign_region(df, cols):df["REGION"] = df[cols["xdock"]].map(REGION_MAP).fillna("SIN REGIÓN")df["CIUDAD"] = df[cols["xdock"]].map(CIUDAD_MAP).fillna("")return df
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 MASTER PIPELINE
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 def run_pipeline(uploaded_file, saved_decisions: dict):logs = []df_raw = load_file(uploaded_file)# Keep raw copy (with SALIDAS) for crossdock deep analysisdf_raw_full = df_raw.copy()# Re-map normalized col names to original-style names for crossdock analysiscol_remap = {v: k for k, v in {"CARRIER": "CARRIER", "XDOCK": "XDOCK","FECHA DE INGRESO": "FECHA DE INGRESO", "HORA DE INGRESO": "HORA DE INGRESO","FOLIO ALMACEN ORIGEN": "FOLIO ALMACEN ORIGEN", "ESTATUS": "ESTATUS","CLASIFICACION DE MATERIAL": "CLASIFICACION DE MATERIAL","TIPO DE MATERIAL": "TIPO DE MATERIAL", "ID SITIO": "ID SITIO","NOMBRE DE SITIO": "NOMBRE DE SITIO","FOLIO CLIENTE ( PDM )": "FOLIO CLIENTE ( PDM )", "ID PALLET": "ID PALLET","NO. DE PALLET": "NO. DE PALLET", "TIPO DE PALLET": "TIPO DE PALLET","FOLIO WMS GASO ( UNICO X PALLET )": "FOLIO WMS GASO ( UNICO X PALLET )","DESCRIPCION MATERIAL": "DESCRIPCION MATERIAL", "PROYECTO": "PROYECTO","SUB-PROYECTO": "SUB-PROYECTO", "FOLIO ENRUTADO CLIENTE": "FOLIO ENRUTADO CLIENTE","ESTATUS SALIDA": "ESTATUS SALIDA", "DIAS INV.": "DIAS INV.","FECHA DE SALIDA": "FECHA DE SALIDA", "HORA SALIDA": "HORA SALIDA","NOMBRE ASP": "NOMBRE ASP", "NOMBRE OPERADOR": "NOMBRE OPERADOR","PLACAS": "PLACAS", "OBSERVACIONES": "OBSERVACIONES","PALLETS SALIDA": "PALLETS SALIDA", "EXISTENCIA REAL": "EXISTENCIA REAL","DIAS QUE DURO EN INVENTARIO": "DIAS QUE DURO EN INVENTARIO",}.items()}# Restore original column names (un-normalize) so crossdock functions can find themfrom unidecode import unidecode as _uddef _unnorm(col):for orig in ["CARRIER","XDOCK","FECHA DE INGRESO","HORA DE INGRESO","FOLIO ALMACEN ORIGEN","ESTATUS","CLASIFICACION DE MATERIAL","TIPO DE MATERIAL","ID SITIO","NOMBRE DE SITIO","FOLIO CLIENTE ( PDM )","ID PALLET","NO. DE PALLET","TIPO DE PALLET","FOLIO WMS GASO ( UNICO X PALLET )","DESCRIPCION MATERIAL","PROYECTO","SUB-PROYECTO","FOLIO ENRUTADO CLIENTE","ESTATUS SALIDA","DIAS INV.","FECHA DE SALIDA","HORA SALIDA","NOMBRE ASP","NOMBRE OPERADOR","PLACAS","OBSERVACIONES","PALLETS SALIDA","EXISTENCIA REAL","DIAS QUE DURO EN INVENTARIO"]:if _ud(orig).strip().lower() == col.strip().lower():return origreturn coldf_raw_full.columns = [_unnorm(c) for c in df_raw_full.columns]logs.append(f"✅ Archivo cargado: {len(df_raw):,} registros totales")
 
@@ -295,21 +295,21 @@ logs.append(f"📦 Pallets activos: {int(df[cols['no_pallet']].sum()):,} | M²: 
 
 return df, df_consol, df_pending, logs, cols, df_raw_full
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 REPORT BUILDERS
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 def build_client_report(df, cols):grp = df.groupby([cols["xdock"], cols["carrier"], cols["tipo_material"]]).agg(NO_PALLETS=(cols["no_pallet"], "sum"),M2=("M2", "sum"),).reset_index()grp["CIUDAD"]    = grp[cols["xdock"]].map(CIUDAD_MAP).fillna(grp[cols["xdock"]])grp["REGION"]    = grp[cols["xdock"]].map(REGION_MAP).fillna("SIN REGIÓN")grp["CAPACIDAD"] = grp[cols["xdock"]].map(CAPACIDADES).fillna(0)grp["PCT_OCP"]   = grp.apply(lambda r: round(r["M2"] / r["CAPACIDAD"], 4) if r["CAPACIDAD"] > 0 else 0, axis=1)return grp
 
 
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 EXCEL EXPORT  (4 sheets: IN-OUT LIMPIO · REPORTE CLIENTE · RESUMEN EJECUTIVO · SITIOS CONSOLIDADOS)
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 HEX_BLUE  = "1A3A6B"HEX_LIGHT = "2E6DB4"HEX_WHITE = "FFFFFF"HEX_LGRAY = "EBF0F7"HEX_GREEN = "1E8449"HEX_AMBER = "E67E22"HEX_RED   = "C0392B"HEX_DRED  = "7B241C"
 
@@ -744,11 +744,11 @@ wb.save(buf)
 buf.seek(0)
 return buf
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 PLOTLY CHARTS
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 def _smart_analysis(xd, pct, total_pal, m2_ocp, cap, tipo_dist, carrier_dist=None):"""Generate a contextual 2-3 sentence analysis for a crossdock.Varies by occupancy level, material mix, and carrier concentration.Never mentions internal calculation factors."""ciudad  = CIUDAD_MAP.get(xd, xd)pct100  = round(pct * 100, 1)disp    = round(cap - m2_ocp, 0)
 
@@ -1342,11 +1342,11 @@ doc.build(story)
 buf.seek(0)
 return buf
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 CROSSDOCK DEEP ANALYSIS
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 def build_crossdock_excel(df_clean_all, df_consol_all, df_raw_full, xdock_name, cols):"""Build a professional analyst-grade Excel workbook for a single crossdock.Uses Excel formulas throughout so all metrics update when data changes.df_raw_full: the FULL raw dataframe (before pipeline filtering) so wehave SALIDA rows too for balance analysis."""import openpyxlfrom openpyxl.styles import (Font, PatternFill, Alignment, Border, Side,GradientFill)from openpyxl.utils import get_column_letterfrom openpyxl.chart import BarChart, LineChart, PieChart, Referencefrom openpyxl.chart.series import DataPointimport pandas as pdimport numpy as npfrom unidecode import unidecode
 
@@ -2646,11 +2646,11 @@ fig7.update_layout(plot_bgcolor="white", paper_bgcolor="white",
 
 return fig1, fig2, fig3, fig4, fig5, fig6, fig7
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 STREAMLIT APP
 
-─────────────────────────────────────────────────────────────────────────────
+#─────────────────────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="GASO – IN-OUT Processor",page_icon="📦",layout="wide",initial_sidebar_state="expanded",)
 
