@@ -1873,94 +1873,54 @@ def build_crossdock_excel(df_clean_all, df_consol_all, df_raw_full, xdock_name, 
     car_col_k  = cols.get("carrier", "carrier")
     mat_col_k  = cols.get("tipo_material", "tipo de material")
 
-    # Active normal pallets — exactly what the dashboard counts
-    df_activo    = df_clean_all[df_clean_all[xd_col_key] == xdock_name].copy()
-    # Consolidated active — exactly what the dashboard shows separately
-    df_consol_xd = df_consol_all[df_consol_all[xd_col_key] == xdock_name].copy()
+    # ── Data sources ──────────────────────────────────────────────────────────
+    # KPIs / balance / tipos / carrier → FULL HISTORY from df_raw_xd
+    #   Entradas    = pallet != 0 (all history)
+    #   Salidas     = FECHA_SAL not null AND pallet != 0 (all history)
+    #   Activos     = pallet != 0, FECHA_SAL null (all history) → matches dashboard
+    #   Consolidados= pallet == 0 (all history)
+    # Tendencia / regresión → only since SALIDA_CUTOFF (handled in trend section)
 
-    # ── Rename normalized columns back to original uppercase names ───────────
-    # Pipeline normalizes col names (lowercase, no accents). The Excel export
-    # and all formula references use the original uppercase names.
-    ORIG_NAMES = {
-        "carrier": "CARRIER", "xdock": "XDOCK",
-        "fecha de ingreso": "FECHA DE INGRESO", "hora de ingreso": "HORA DE INGRESO",
-        "folio almacen origen": "FOLIO ALMACEN ORIGEN", "estatus": "ESTATUS",
-        "clasificacion de material": "CLASIFICACION DE MATERIAL",
-        "tipo de material": "TIPO DE MATERIAL", "id sitio": "ID SITIO",
-        "nombre de sitio": "NOMBRE DE SITIO",
-        "folio cliente ( pdm )": "FOLIO CLIENTE ( PDM )", "id pallet": "ID PALLET",
-        "no. de pallet": "NO. DE PALLET", "tipo de pallet": "TIPO DE PALLET",
-        "folio wms gaso ( unico x pallet )": "FOLIO WMS GASO ( UNICO X PALLET )",
-        "descripcion material": "DESCRIPCION MATERIAL", "proyecto": "PROYECTO",
-        "sub-proyecto": "SUB-PROYECTO",
-        "folio enrutado cliente": "FOLIO ENRUTADO CLIENTE",
-        "estatus salida": "ESTATUS SALIDA", "dias inv.": "DIAS INV.",
-        "fecha de salida": "FECHA DE SALIDA", "hora salida": "HORA SALIDA",
-        "nombre asp": "NOMBRE ASP", "nombre operador": "NOMBRE OPERADOR",
-        "placas": "PLACAS", "observaciones": "OBSERVACIONES",
-        "pallets salida": "PALLETS SALIDA", "existencia real": "EXISTENCIA REAL",
-        "dias que duro en inventario": "DIAS QUE DURO EN INVENTARIO",
-    }
-    df_activo.rename(    columns=ORIG_NAMES, inplace=True)
-    df_consol_xd.rename( columns=ORIG_NAMES, inplace=True)
-
-    # Update col key references to use uppercase now
-    xd_col_key = "XDOCK"
-    car_col_k  = "CARRIER"
-    mat_col_k  = "TIPO DE MATERIAL"
-
-    # DIAS INV
-    df_activo["_DIAS"]    = pd.to_numeric(df_activo.get("DIAS INV.", pd.Series(dtype=float)), errors="coerce")
-    df_consol_xd["_DIAS"] = pd.to_numeric(df_consol_xd.get("DIAS INV.", pd.Series(dtype=float)), errors="coerce")
-
-    # Flags
-    df_activo["_IS_CONSOL"]    = False
-    df_activo["_ES_SALIDA"]    = False
-    df_consol_xd["_IS_CONSOL"] = True
-    df_consol_xd["_ES_SALIDA"] = False
-
-    # Salidas and trend data from raw (same _is_salida logic as pipeline)
     def _match_xdock_raw(val):
         if not val: return False
         v = str(val).strip()
         return v == xdock_name or XDOCK_ALIASES.get(norm(v), v) == xdock_name
-
-    def _is_salida_raw(row):
-        es = str(row.get("ESTATUS SALIDA", "")).strip().upper()
-        fd = row.get("FECHA DE SALIDA", None)
-        fd_ts = pd.to_datetime(fd, errors="coerce")
-        fd_valid = (pd.notna(fd_ts) and fd_ts >= SALIDA_CUTOFF)
-        return es == "SALIDA" and fd_valid
 
     def _is_zero_pallet(val):
         try: return float(val) == 0
         except: return False
 
     df_raw_xd = df_raw_full[df_raw_full["XDOCK"].apply(_match_xdock_raw)].copy()
-    df_raw_xd["_ES_SALIDA"] = df_raw_xd.apply(_is_salida_raw, axis=1)
-    df_raw_xd["_IS_CONSOL"] = df_raw_xd["NO. DE PALLET"].apply(_is_zero_pallet)
-    df_raw_xd["_FECHA_ING"] = pd.to_datetime(df_raw_xd.get("FECHA DE INGRESO", pd.Series(dtype=str)), errors="coerce")
-    df_raw_xd["_MES_STR"]   = df_raw_xd["_FECHA_ING"].dt.strftime("%Y-%m").fillna("DESCONOCIDO")
-    df_raw_xd["_DIAS"]      = pd.to_numeric(df_raw_xd.get("DIAS INV.", pd.Series(dtype=float)), errors="coerce")
+    df_raw_xd["_NP"]       = pd.to_numeric(df_raw_xd.get("NO. DE PALLET", pd.Series(dtype=float)), errors="coerce").fillna(0)
+    df_raw_xd["_FECHA_ING"]= pd.to_datetime(df_raw_xd.get("FECHA DE INGRESO", pd.Series(dtype=str)), errors="coerce")
+    df_raw_xd["_FECHA_SAL"]= pd.to_datetime(df_raw_xd.get("FECHA DE SALIDA",  pd.Series(dtype=str)), errors="coerce")
+    df_raw_xd["_MES_STR"]  = df_raw_xd["_FECHA_ING"].dt.strftime("%Y-%m").fillna("DESCONOCIDO")
+    df_raw_xd["_DIAS"]     = pd.to_numeric(df_raw_xd.get("DIAS INV.", pd.Series(dtype=float)), errors="coerce")
+    df_raw_xd["_IS_CONSOL"]= df_raw_xd["_NP"] == 0
+    # Salida = FECHA_SAL not null (full history, no cutoff for KPIs)
+    df_raw_xd["_ES_SALIDA"]= df_raw_xd["_FECHA_SAL"].notna()
 
-    df_salidas        = df_raw_xd[df_raw_xd["_ES_SALIDA"]].copy()
-    df_salidas_normal = df_raw_xd[df_raw_xd["_ES_SALIDA"] & ~df_raw_xd["_IS_CONSOL"]].copy()
-    # df_xd = all raw records — used only for trend and ASP charts
-    df_xd = df_raw_xd.copy()
+    xd_col_key = "XDOCK"
+    car_col_k  = "CARRIER"
+    mat_col_k  = "TIPO DE MATERIAL"
+
+    # Full-history sets
+    df_activo    = df_raw_xd[~df_raw_xd["_ES_SALIDA"] & ~df_raw_xd["_IS_CONSOL"]].copy()
+    df_consol_xd = df_raw_xd[~df_raw_xd["_ES_SALIDA"] &  df_raw_xd["_IS_CONSOL"]].copy()
+    df_salidas   = df_raw_xd[ df_raw_xd["_ES_SALIDA"]  & ~df_raw_xd["_IS_CONSOL"]].copy()
+    df_xd        = df_raw_xd.copy()
 
     carriers = sorted(set(
         df_activo[car_col_k].dropna().unique().tolist() +
-        df_salidas["CARRIER"].dropna().unique().tolist()
+        df_salidas[car_col_k].dropna().unique().tolist()
     ))
     tipos = sorted(set(
         df_activo[mat_col_k].fillna("SIN CLASIFICAR").unique().tolist() +
-        df_salidas.get("TIPO DE MATERIAL", pd.Series(dtype=str)).fillna("SIN CLASIFICAR").unique().tolist()
+        df_salidas[mat_col_k].fillna("SIN CLASIFICAR").unique().tolist()
     ))
-    clasifs_src = [c for c in df_activo.columns if "clasif" in c]
+    clasifs_src = [c for c in df_activo.columns if "clasif" in c.lower()]
     clasifs = sorted(df_activo[clasifs_src[0]].fillna("OTRO").unique()) if clasifs_src else []
-    cap     = CAPACIDADES.get(xdock_name, 0)
-    carriers = sorted(set(df_activo[car_col_k].dropna().unique().tolist() + df_salidas["CARRIER"].dropna().unique().tolist()))
-
+    cap = CAPACIDADES.get(xdock_name, 0)
     wb = openpyxl.Workbook()
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -2109,8 +2069,8 @@ def build_crossdock_excel(df_clean_all, df_consol_all, df_raw_full, xdock_name, 
         n_cons_c = len(df_car_cons)
         n_sal_c  = len(df_car_sal)
         n_dev_c  = len(df_car_dev)
-        n_ent_c  = n_pal_c + n_cons_c + n_sal_c
-        n_bal_c  = n_pal_c + n_cons_c
+        n_ent_c  = n_pal_c + n_sal_c   # entradas = activos + salidas (consol no cuentan)
+        n_bal_c  = n_pal_c
         pct_rot  = n_sal_c / n_ent_c if n_ent_c > 0 else 0
         dias_c   = round(df_car_act["_DIAS"].median(), 1) if len(df_car_act) > 0 else 0
         vals = [car, n_ent_c, n_sal_c, n_bal_c, pct_rot, n_pal_c, n_cons_c,
@@ -2124,10 +2084,10 @@ def build_crossdock_excel(df_clean_all, df_consol_all, df_raw_full, xdock_name, 
     tr = 16 + len(carriers)
     _hdr_cell(ws_res, tr, 1, "TOTAL GENERAL", bg=C_BLUE)
     total_vals = [
-        n_pallets + len(df_consol_xd) + n_sal_rows,
+        n_pallets + n_sal_rows,           # entradas totales = activos + salidas
         n_sal_rows,
-        n_pallets + len(df_consol_xd),
-        n_sal_rows / (n_pallets + len(df_consol_xd) + n_sal_rows) if (n_pallets + len(df_consol_xd) + n_sal_rows) > 0 else 0,
+        n_pallets,                         # balance = solo activos
+        n_sal_rows / (n_pallets + n_sal_rows) if (n_pallets + n_sal_rows) > 0 else 0,
         n_pallets, len(df_consol_xd), dias_med, n_devol
     ]
     total_fmts = ["0","0","0","0.0%","0","0","0.0","0"]
@@ -2156,7 +2116,7 @@ def build_crossdock_excel(df_clean_all, df_consol_all, df_raw_full, xdock_name, 
         df_ta  = df_activo[df_activo[mat_col_k].fillna("SIN CLASIFICAR") == tipo]
         df_tco = df_consol_xd[df_consol_xd.get(mat_col_k, pd.Series(dtype=str)).fillna("SIN CLASIFICAR") == tipo] if mat_col_k in df_consol_xd.columns else pd.DataFrame()
         df_ts  = df_salidas[df_salidas["TIPO DE MATERIAL"].fillna("SIN CLASIFICAR") == tipo] if "TIPO DE MATERIAL" in df_salidas.columns else pd.DataFrame()
-        n_t    = len(df_ta) + len(df_tco) + len(df_ts)
+        n_t    = len(df_ta) + len(df_ts)   # activos + salidas (consol no son entradas)
         pct_t  = len(df_ts) / n_t if n_t > 0 else 0
         dias_t = round(df_ta["_DIAS"].median(), 1) if len(df_ta) > 0 else 0
         vals = [tipo, len(df_ta), len(df_tco), len(df_ts), pct_t, dias_t if pd.notna(dias_t) else 0]
@@ -2335,7 +2295,7 @@ def build_crossdock_excel(df_clean_all, df_consol_all, df_raw_full, xdock_name, 
         df_car_cons= df_consol_xd[df_consol_xd["CARRIER"] == car] if "CARRIER" in df_consol_xd.columns else pd.DataFrame()
         df_car_sal = df_salidas[df_salidas["CARRIER"] == car] if "CARRIER" in df_salidas.columns else pd.DataFrame()
         df_car_dev = df_car[df_car["ESTATUS"] == "DEVOLUCION"] if "ESTATUS" in df_car.columns else pd.DataFrame()
-        n_ent_c = len(df_car) + len(df_car_cons) + len(df_car_sal)
+        n_ent_c = len(df_car) + len(df_car_sal)   # activos + salidas
         pct_c   = len(df_car_sal) / n_ent_c if n_ent_c > 0 else 0
         dias_c  = round(df_car["_DIAS"].median(), 1) if len(df_car) > 0 else 0
         ws_car.row_dimensions[r_car].height = 24
@@ -2367,7 +2327,7 @@ def build_crossdock_excel(df_clean_all, df_consol_all, df_raw_full, xdock_name, 
             df_ta  = df_car[df_car[mat_col_k].fillna("SIN CLASIFICAR")==tipo]
             df_tco = df_car_cons[df_car_cons.get(mat_col_k, pd.Series(dtype=str)).fillna("SIN CLASIFICAR")==tipo] if mat_col_k in df_car_cons.columns and len(df_car_cons)>0 else pd.DataFrame()
             df_ts  = df_car_sal[df_car_sal["TIPO DE MATERIAL"].fillna("SIN CLASIFICAR")==tipo] if "TIPO DE MATERIAL" in df_car_sal.columns and len(df_car_sal)>0 else pd.DataFrame()
-            n_t    = len(df_ta)+len(df_tco)+len(df_ts)
+            n_t    = len(df_ta)+len(df_ts)   # activos + salidas
             pct_t  = len(df_ts)/n_t if n_t>0 else 0
             dias_t = round(df_ta["_DIAS"].median(),1) if len(df_ta)>0 else 0
             top_p  = df_ta["TIPO DE PALLET"].value_counts().index[0] if "TIPO DE PALLET" in df_ta.columns and len(df_ta)>0 else "-"
@@ -2572,94 +2532,54 @@ def build_crossdock_pdf(df_clean_all, df_consol_all, df_raw_full, xdock_name, co
     car_col_k  = cols.get("carrier", "carrier")
     mat_col_k  = cols.get("tipo_material", "tipo de material")
 
-    # Active normal pallets — exactly what the dashboard counts
-    df_activo    = df_clean_all[df_clean_all[xd_col_key] == xdock_name].copy()
-    # Consolidated active — exactly what the dashboard shows separately
-    df_consol_xd = df_consol_all[df_consol_all[xd_col_key] == xdock_name].copy()
+    # ── Data sources ──────────────────────────────────────────────────────────
+    # KPIs / balance / tipos / carrier → FULL HISTORY from df_raw_xd
+    #   Entradas    = pallet != 0 (all history)
+    #   Salidas     = FECHA_SAL not null AND pallet != 0 (all history)
+    #   Activos     = pallet != 0, FECHA_SAL null (all history) → matches dashboard
+    #   Consolidados= pallet == 0 (all history)
+    # Tendencia / regresión → only since SALIDA_CUTOFF (handled in trend section)
 
-    # ── Rename normalized columns back to original uppercase names ───────────
-    # Pipeline normalizes col names (lowercase, no accents). The Excel export
-    # and all formula references use the original uppercase names.
-    ORIG_NAMES = {
-        "carrier": "CARRIER", "xdock": "XDOCK",
-        "fecha de ingreso": "FECHA DE INGRESO", "hora de ingreso": "HORA DE INGRESO",
-        "folio almacen origen": "FOLIO ALMACEN ORIGEN", "estatus": "ESTATUS",
-        "clasificacion de material": "CLASIFICACION DE MATERIAL",
-        "tipo de material": "TIPO DE MATERIAL", "id sitio": "ID SITIO",
-        "nombre de sitio": "NOMBRE DE SITIO",
-        "folio cliente ( pdm )": "FOLIO CLIENTE ( PDM )", "id pallet": "ID PALLET",
-        "no. de pallet": "NO. DE PALLET", "tipo de pallet": "TIPO DE PALLET",
-        "folio wms gaso ( unico x pallet )": "FOLIO WMS GASO ( UNICO X PALLET )",
-        "descripcion material": "DESCRIPCION MATERIAL", "proyecto": "PROYECTO",
-        "sub-proyecto": "SUB-PROYECTO",
-        "folio enrutado cliente": "FOLIO ENRUTADO CLIENTE",
-        "estatus salida": "ESTATUS SALIDA", "dias inv.": "DIAS INV.",
-        "fecha de salida": "FECHA DE SALIDA", "hora salida": "HORA SALIDA",
-        "nombre asp": "NOMBRE ASP", "nombre operador": "NOMBRE OPERADOR",
-        "placas": "PLACAS", "observaciones": "OBSERVACIONES",
-        "pallets salida": "PALLETS SALIDA", "existencia real": "EXISTENCIA REAL",
-        "dias que duro en inventario": "DIAS QUE DURO EN INVENTARIO",
-    }
-    df_activo.rename(    columns=ORIG_NAMES, inplace=True)
-    df_consol_xd.rename( columns=ORIG_NAMES, inplace=True)
-
-    # Update col key references to use uppercase now
-    xd_col_key = "XDOCK"
-    car_col_k  = "CARRIER"
-    mat_col_k  = "TIPO DE MATERIAL"
-
-    # DIAS INV
-    df_activo["_DIAS"]    = pd.to_numeric(df_activo.get("DIAS INV.", pd.Series(dtype=float)), errors="coerce")
-    df_consol_xd["_DIAS"] = pd.to_numeric(df_consol_xd.get("DIAS INV.", pd.Series(dtype=float)), errors="coerce")
-
-    # Flags
-    df_activo["_IS_CONSOL"]    = False
-    df_activo["_ES_SALIDA"]    = False
-    df_consol_xd["_IS_CONSOL"] = True
-    df_consol_xd["_ES_SALIDA"] = False
-
-    # Salidas and trend data from raw (same _is_salida logic as pipeline)
     def _match_xdock_raw(val):
         if not val: return False
         v = str(val).strip()
         return v == xdock_name or XDOCK_ALIASES.get(norm(v), v) == xdock_name
-
-    def _is_salida_raw(row):
-        es = str(row.get("ESTATUS SALIDA", "")).strip().upper()
-        fd = row.get("FECHA DE SALIDA", None)
-        fd_ts = pd.to_datetime(fd, errors="coerce")
-        fd_valid = (pd.notna(fd_ts) and fd_ts >= SALIDA_CUTOFF)
-        return es == "SALIDA" and fd_valid
 
     def _is_zero_pallet(val):
         try: return float(val) == 0
         except: return False
 
     df_raw_xd = df_raw_full[df_raw_full["XDOCK"].apply(_match_xdock_raw)].copy()
-    df_raw_xd["_ES_SALIDA"] = df_raw_xd.apply(_is_salida_raw, axis=1)
-    df_raw_xd["_IS_CONSOL"] = df_raw_xd["NO. DE PALLET"].apply(_is_zero_pallet)
-    df_raw_xd["_FECHA_ING"] = pd.to_datetime(df_raw_xd.get("FECHA DE INGRESO", pd.Series(dtype=str)), errors="coerce")
-    df_raw_xd["_MES_STR"]   = df_raw_xd["_FECHA_ING"].dt.strftime("%Y-%m").fillna("DESCONOCIDO")
-    df_raw_xd["_DIAS"]      = pd.to_numeric(df_raw_xd.get("DIAS INV.", pd.Series(dtype=float)), errors="coerce")
+    df_raw_xd["_NP"]       = pd.to_numeric(df_raw_xd.get("NO. DE PALLET", pd.Series(dtype=float)), errors="coerce").fillna(0)
+    df_raw_xd["_FECHA_ING"]= pd.to_datetime(df_raw_xd.get("FECHA DE INGRESO", pd.Series(dtype=str)), errors="coerce")
+    df_raw_xd["_FECHA_SAL"]= pd.to_datetime(df_raw_xd.get("FECHA DE SALIDA",  pd.Series(dtype=str)), errors="coerce")
+    df_raw_xd["_MES_STR"]  = df_raw_xd["_FECHA_ING"].dt.strftime("%Y-%m").fillna("DESCONOCIDO")
+    df_raw_xd["_DIAS"]     = pd.to_numeric(df_raw_xd.get("DIAS INV.", pd.Series(dtype=float)), errors="coerce")
+    df_raw_xd["_IS_CONSOL"]= df_raw_xd["_NP"] == 0
+    # Salida = FECHA_SAL not null (full history, no cutoff for KPIs)
+    df_raw_xd["_ES_SALIDA"]= df_raw_xd["_FECHA_SAL"].notna()
 
-    df_salidas        = df_raw_xd[df_raw_xd["_ES_SALIDA"]].copy()
-    df_salidas_normal = df_raw_xd[df_raw_xd["_ES_SALIDA"] & ~df_raw_xd["_IS_CONSOL"]].copy()
-    # df_xd = all raw records — used only for trend and ASP charts
-    df_xd = df_raw_xd.copy()
+    xd_col_key = "XDOCK"
+    car_col_k  = "CARRIER"
+    mat_col_k  = "TIPO DE MATERIAL"
+
+    # Full-history sets
+    df_activo    = df_raw_xd[~df_raw_xd["_ES_SALIDA"] & ~df_raw_xd["_IS_CONSOL"]].copy()
+    df_consol_xd = df_raw_xd[~df_raw_xd["_ES_SALIDA"] &  df_raw_xd["_IS_CONSOL"]].copy()
+    df_salidas   = df_raw_xd[ df_raw_xd["_ES_SALIDA"]  & ~df_raw_xd["_IS_CONSOL"]].copy()
+    df_xd        = df_raw_xd.copy()
 
     carriers = sorted(set(
         df_activo[car_col_k].dropna().unique().tolist() +
-        df_salidas["CARRIER"].dropna().unique().tolist()
+        df_salidas[car_col_k].dropna().unique().tolist()
     ))
     tipos = sorted(set(
         df_activo[mat_col_k].fillna("SIN CLASIFICAR").unique().tolist() +
-        df_salidas.get("TIPO DE MATERIAL", pd.Series(dtype=str)).fillna("SIN CLASIFICAR").unique().tolist()
+        df_salidas[mat_col_k].fillna("SIN CLASIFICAR").unique().tolist()
     ))
-    clasifs_src = [c for c in df_activo.columns if "clasif" in c]
+    clasifs_src = [c for c in df_activo.columns if "clasif" in c.lower()]
     clasifs = sorted(df_activo[clasifs_src[0]].fillna("OTRO").unique()) if clasifs_src else []
-    cap     = CAPACIDADES.get(xdock_name, 0)
-    carriers = sorted(set(df_activo[car_col_k].dropna().unique().tolist() + df_salidas["CARRIER"].dropna().unique().tolist()))
-
+    cap = CAPACIDADES.get(xdock_name, 0)
     RL_BLUE   = colors.HexColor("#1A3A6B")
     RL_LIGHT  = colors.HexColor("#2E6DB4")
     RL_ACCENT = colors.HexColor("#4A90D9")
